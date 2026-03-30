@@ -866,11 +866,11 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 				if (matchesModifyOtherKeys(data, CODEPOINTS.enter, MODIFIERS.shift)) {
 					return true;
 				}
-				// When Kitty protocol is active, legacy sequences are custom terminal mappings
-				// \x1b\r = Kitty's "map shift+enter send_text all \e\r"
-				// \n = Ghostty's "keybind = shift+enter=text:\n"
-				if (_kittyProtocolActive) {
-					return data === "\x1b\r" || data === "\n";
+				// Legacy sequences for shift+enter:
+				// \x1b\r = tmux and Kitty's mapping for shift+enter
+				// \n = Ghostty and some tmux configurations
+				if (data === "\n" || data === "\x1b\r") {
+					return true;
 				}
 				return false;
 			}
@@ -886,17 +886,12 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 				if (matchesModifyOtherKeys(data, CODEPOINTS.enter, MODIFIERS.alt)) {
 					return true;
 				}
-				// \x1b\r is alt+enter only in legacy mode (no Kitty protocol)
-				// When Kitty protocol is active, alt+enter comes as CSI u sequence
-				if (!_kittyProtocolActive) {
-					return data === "\x1b\r";
-				}
+				// Note: \x1b\r is NOT alt+enter - it's shift+enter (tmux/Kitty mapping)
 				return false;
 			}
 			if (modifier === 0) {
 				return (
 					data === "\r" ||
-					(!_kittyProtocolActive && data === "\n") ||
 					data === "\x1bOM" || // SS3 M (numpad enter in some terminals)
 					matchesKittySequence(data, CODEPOINTS.enter, 0) ||
 					matchesKittySequence(data, CODEPOINTS.kpEnter, 0)
@@ -1234,12 +1229,10 @@ export function parseKey(data: string): string | undefined {
 	}
 
 	// Mode-aware legacy sequences
-	// When Kitty protocol is active, ambiguous sequences are interpreted as custom terminal mappings:
-	// - \x1b\r = shift+enter (Kitty mapping), not alt+enter
-	// - \n = shift+enter (Ghostty mapping)
-	if (_kittyProtocolActive) {
-		if (data === "\x1b\r" || data === "\n") return "shift+enter";
-	}
+	// Legacy sequences for shift+enter:
+	// - \x1b\r = tmux and Kitty's mapping for shift+enter
+	// - \n = Ghostty and some tmux configurations
+	if (data === "\n" || data === "\x1b\r") return "shift+enter";
 
 	const legacySequenceKeyId = LEGACY_SEQUENCE_KEY_IDS[data];
 	if (legacySequenceKeyId) return legacySequenceKeyId;
@@ -1260,7 +1253,7 @@ export function parseKey(data: string): string | undefined {
 	if (data === "\x7f") return "backspace";
 	if (data === "\x08") return isWindowsTerminalSession() ? "ctrl+backspace" : "backspace";
 	if (data === "\x1b[Z") return "shift+tab";
-	if (!_kittyProtocolActive && data === "\x1b\r") return "alt+enter";
+
 	if (!_kittyProtocolActive && data === "\x1b ") return "alt+space";
 	if (data === "\x1b\x7f" || data === "\x1b\b") return "alt+backspace";
 	if (!_kittyProtocolActive && data === "\x1bB") return "alt+left";
