@@ -258,17 +258,31 @@ describe("matchesKey", () => {
 			assert.strictEqual(matchesKey("\x1b", "escape"), true);
 		});
 
-		it("should match legacy linefeed as enter", () => {
+		it("should treat linefeed as shift+enter (tmux/Ghostty mapping)", () => {
 			setKittyProtocolActive(false);
-			assert.strictEqual(matchesKey("\n", "enter"), true);
-			assert.strictEqual(parseKey("\n"), "enter");
-		});
+			assert.strictEqual(matchesKey("\n", "shift+enter"), true);
+			assert.strictEqual(matchesKey("\n", "enter"), false);
+			assert.strictEqual(parseKey("\n"), "shift+enter");
 
-		it("should treat linefeed as shift+enter when kitty active", () => {
 			setKittyProtocolActive(true);
 			assert.strictEqual(matchesKey("\n", "shift+enter"), true);
 			assert.strictEqual(matchesKey("\n", "enter"), false);
 			assert.strictEqual(parseKey("\n"), "shift+enter");
+			setKittyProtocolActive(false);
+		});
+
+		it("should treat ESC+CR as shift+enter (tmux mapping)", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b\r", "shift+enter"), true);
+			assert.strictEqual(matchesKey("\x1b\r", "alt+enter"), false);
+			assert.strictEqual(matchesKey("\x1b\r", "enter"), false);
+			assert.strictEqual(parseKey("\x1b\r"), "shift+enter");
+
+			setKittyProtocolActive(true);
+			assert.strictEqual(matchesKey("\x1b\r", "shift+enter"), true);
+			assert.strictEqual(matchesKey("\x1b\r", "alt+enter"), false);
+			assert.strictEqual(matchesKey("\x1b\r", "enter"), false);
+			assert.strictEqual(parseKey("\x1b\r"), "shift+enter");
 			setKittyProtocolActive(false);
 		});
 
@@ -478,7 +492,7 @@ describe("parseKey", () => {
 			assert.strictEqual(parseKey("\x1b"), "escape");
 			assert.strictEqual(parseKey("\t"), "tab");
 			assert.strictEqual(parseKey("\r"), "enter");
-			assert.strictEqual(parseKey("\n"), "enter");
+			assert.strictEqual(parseKey("\n"), "shift+enter");
 			assert.strictEqual(parseKey("\x00"), "ctrl+space");
 			assert.strictEqual(parseKey(" "), "space");
 			assert.strictEqual(parseKey("1"), "1");
