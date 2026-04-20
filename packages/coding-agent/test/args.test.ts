@@ -92,7 +92,12 @@ describe("parseArgs", () => {
 
 		test("parses --append-system-prompt", () => {
 			const result = parseArgs(["--append-system-prompt", "Additional context"]);
-			expect(result.appendSystemPrompt).toBe("Additional context");
+			expect(result.appendSystemPrompt).toEqual(["Additional context"]);
+		});
+
+		test("parses multiple --append-system-prompt flags", () => {
+			const result = parseArgs(["--append-system-prompt", "Context A", "--append-system-prompt", "Context B"]);
+			expect(result.appendSystemPrompt).toEqual(["Context A", "Context B"]);
 		});
 
 		test("parses --mode", () => {
@@ -226,6 +231,18 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--no-context-files flag", () => {
+		test("parses --no-context-files flag", () => {
+			const result = parseArgs(["--no-context-files"]);
+			expect(result.noContextFiles).toBe(true);
+		});
+
+		test("parses -nc shorthand", () => {
+			const result = parseArgs(["-nc"]);
+			expect(result.noContextFiles).toBe(true);
+		});
+	});
+
 	describe("--verbose flag", () => {
 		test("parses --verbose flag", () => {
 			const result = parseArgs(["--verbose"]);
@@ -270,9 +287,20 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual(["explain this"]);
 		});
 
-		test("ignores unknown flags starting with -", () => {
+		test("captures unknown long flags with string values", () => {
 			const result = parseArgs(["--unknown-flag", "message"]);
-			expect(result.messages).toEqual(["message"]);
+			expect(result.messages).toEqual([]);
+			expect(result.unknownFlags.get("unknown-flag")).toBe("message");
+		});
+
+		test("captures unknown boolean long flags", () => {
+			const result = parseArgs(["--unknown-flag"]);
+			expect(result.unknownFlags.get("unknown-flag")).toBe(true);
+		});
+
+		test("captures unknown long flags with equals syntax", () => {
+			const result = parseArgs(["--unknown-flag=value"]);
+			expect(result.unknownFlags.get("unknown-flag")).toBe("value");
 		});
 	});
 

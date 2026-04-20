@@ -1,12 +1,14 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, type ChildProcessByStdio, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
+import { isLocalPath } from "../utils/paths.js";
 import { isStdoutTakenOver } from "./output-guard.js";
 import type { PackageSource, SettingsManager } from "./settings-manager.js";
 
@@ -57,11 +59,21 @@ export interface PackageUpdate {
 	scope: Exclude<SourceScope, "temporary">;
 }
 
+export interface ConfiguredPackage {
+	source: string;
+	scope: "user" | "project";
+	filtered: boolean;
+	installedPath?: string;
+}
+
 export interface PackageManager {
 	resolve(onMissing?: (source: string) => Promise<MissingSourceAction>): Promise<ResolvedPaths>;
 	install(source: string, options?: { local?: boolean }): Promise<void>;
+	installAndPersist(source: string, options?: { local?: boolean }): Promise<void>;
 	remove(source: string, options?: { local?: boolean }): Promise<void>;
+	removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean>;
 	update(source?: string): Promise<void>;
+	listConfiguredPackages(): ConfiguredPackage[];
 	resolveExtensionSources(
 		sources: string[],
 		options?: { local?: boolean; temporary?: boolean },
@@ -106,6 +118,24 @@ interface ResourceAccumulator {
 	skills: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	prompts: Map<string, { metadata: PathMetadata; enabled: boolean }>;
 	themes: Map<string, { metadata: PathMetadata; enabled: boolean }>;
+}
+
+/**
+ * Compute a numeric precedence rank for a resource based on its metadata.
+ * Lower rank = higher precedence. Used to sort resolved resources so that
+ * name-collision resolution ("first wins") produces the correct outcome.
+ *
+ * Precedence (highest to lowest):
+ *   0  project + settings entry (source: "local", scope: "project")
+ *   1  project + auto-discovered (source: "auto", scope: "project")
+ *   2  user + settings entry (source: "local", scope: "user")
+ *   3  user + auto-discovered (source: "auto", scope: "user")
+ *   4  package resource (origin: "package")
+ */
+function resourcePrecedenceRank(m: PathMetadata): number {
+	if (m.origin === "package") return 4;
+	const scopeBase = m.scope === "project" ? 0 : 2;
+	return scopeBase + (m.source === "local" ? 0 : 1);
 }
 
 interface PackageFilter {
@@ -837,6 +867,34 @@ export class DefaultPackageManager implements PackageManager {
 		return this.toResolvedPaths(accumulator);
 	}
 
+	listConfiguredPackages(): ConfiguredPackage[] {
+		const globalSettings = this.settingsManager.getGlobalSettings();
+		const projectSettings = this.settingsManager.getProjectSettings();
+		const configuredPackages: ConfiguredPackage[] = [];
+
+		for (const pkg of globalSettings.packages ?? []) {
+			const source = typeof pkg === "string" ? pkg : pkg.source;
+			configuredPackages.push({
+				source,
+				scope: "user",
+				filtered: typeof pkg === "object",
+				installedPath: this.getInstalledPath(source, "user"),
+			});
+		}
+
+		for (const pkg of projectSettings.packages ?? []) {
+			const source = typeof pkg === "string" ? pkg : pkg.source;
+			configuredPackages.push({
+				source,
+				scope: "project",
+				filtered: typeof pkg === "object",
+				installedPath: this.getInstalledPath(source, "project"),
+			});
+		}
+
+		return configuredPackages;
+	}
+
 	async install(source: string, options?: { local?: boolean }): Promise<void> {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
@@ -860,6 +918,11 @@ export class DefaultPackageManager implements PackageManager {
 		});
 	}
 
+	async installAndPersist(source: string, options?: { local?: boolean }): Promise<void> {
+		await this.install(source, options);
+		this.addSourceToSettings(source, options);
+	}
+
 	async remove(source: string, options?: { local?: boolean }): Promise<void> {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
@@ -877,6 +940,11 @@ export class DefaultPackageManager implements PackageManager {
 			}
 			throw new Error(`Unsupported remove source: ${source}`);
 		});
+	}
+
+	async removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean> {
+		await this.remove(source, options);
+		return this.removeSourceFromSettings(source, options);
 	}
 
 	async update(source?: string): Promise<void> {
@@ -1192,15 +1260,7 @@ export class DefaultPackageManager implements PackageManager {
 			};
 		}
 
-		const trimmed = source.trim();
-		const isWindowsAbsolutePath = /^[A-Za-z]:[\\/]|^\\\\/.test(trimmed);
-		const isLocalPathLike =
-			trimmed.startsWith(".") ||
-			trimmed.startsWith("/") ||
-			trimmed === "~" ||
-			trimmed.startsWith("~/") ||
-			isWindowsAbsolutePath;
-		if (isLocalPathLike) {
+		if (isLocalPath(source)) {
 			return { type: "local", path: source };
 		}
 
@@ -1258,12 +1318,15 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async getLatestNpmVersion(packageName: string): Promise<string> {
-		const response = await fetch(`https://registry.npmjs.org/${packageName}/latest`, {
-			signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
-		});
-		if (!response.ok) throw new Error(`Failed to fetch npm registry: ${response.status}`);
-		const data = (await response.json()) as { version: string };
-		return data.version;
+		const npmCommand = this.getNpmCommand();
+		const stdout = await this.runCommandCapture(
+			npmCommand.command,
+			[...npmCommand.args, "view", packageName, "version", "--json"],
+			{ cwd: this.cwd, timeoutMs: NETWORK_TIMEOUT_MS },
+		);
+		const raw = stdout.trim();
+		if (!raw) throw new Error("Empty response from npm view");
+		return JSON.parse(raw);
 	}
 
 	private async gitHasAvailableUpdate(installedPath: string): Promise<boolean> {
@@ -1535,7 +1598,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		const packageJsonPath = join(targetDir, "package.json");
 		if (existsSync(packageJsonPath)) {
-			await this.runNpmCommand(["install"], { cwd: targetDir });
+			await this.runNpmCommand(["install", "--omit=dev"], { cwd: targetDir });
 		}
 	}
 
@@ -1570,7 +1633,7 @@ export class DefaultPackageManager implements PackageManager {
 
 		const packageJsonPath = join(targetDir, "package.json");
 		if (existsSync(packageJsonPath)) {
-			await this.runNpmCommand(["install"], { cwd: targetDir });
+			await this.runNpmCommand(["install", "--omit=dev"], { cwd: targetDir });
 		}
 	}
 
@@ -2098,11 +2161,13 @@ export class DefaultPackageManager implements PackageManager {
 
 	private toResolvedPaths(accumulator: ResourceAccumulator): ResolvedPaths {
 		const toResolved = (entries: Map<string, { metadata: PathMetadata; enabled: boolean }>): ResolvedResource[] => {
-			return Array.from(entries.entries()).map(([path, { metadata, enabled }]) => ({
+			const resolved = Array.from(entries.entries()).map(([path, { metadata, enabled }]) => ({
 				path,
 				enabled,
 				metadata,
 			}));
+			resolved.sort((a, b) => resourcePrecedenceRank(a.metadata) - resourcePrecedenceRank(b.metadata));
+			return resolved;
 		};
 
 		return {
@@ -2113,18 +2178,34 @@ export class DefaultPackageManager implements PackageManager {
 		};
 	}
 
+	private spawnCommand(command: string, args: string[], options?: { cwd?: string }): ChildProcess {
+		return spawn(command, args, {
+			cwd: options?.cwd,
+			stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
+			shell: process.platform === "win32",
+		});
+	}
+
+	private spawnCaptureCommand(
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: Record<string, string> },
+	): ChildProcessByStdio<null, Readable, Readable> {
+		return spawn(command, args, {
+			cwd: options?.cwd,
+			stdio: ["ignore", "pipe", "pipe"],
+			shell: process.platform === "win32",
+			env: options?.env ? { ...process.env, ...options.env } : process.env,
+		});
+	}
+
 	private runCommandCapture(
 		command: string,
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
 	): Promise<string> {
 		return new Promise((resolvePromise, reject) => {
-			const child = spawn(command, args, {
-				cwd: options?.cwd,
-				stdio: ["ignore", "pipe", "pipe"],
-				shell: process.platform === "win32",
-				env: options?.env ? { ...process.env, ...options.env } : process.env,
-			});
+			const child = this.spawnCaptureCommand(command, args, options);
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
@@ -2142,11 +2223,11 @@ export class DefaultPackageManager implements PackageManager {
 			child.stderr?.on("data", (data) => {
 				stderr += data.toString();
 			});
-			child.on("error", (error) => {
+			child.once("error", (error) => {
 				if (timeout) clearTimeout(timeout);
 				reject(error);
 			});
-			child.on("exit", (code) => {
+			child.once("close", (code, signal) => {
 				if (timeout) clearTimeout(timeout);
 				if (timedOut) {
 					reject(new Error(`${command} ${args.join(" ")} timed out after ${options?.timeoutMs}ms`));
@@ -2156,18 +2237,15 @@ export class DefaultPackageManager implements PackageManager {
 					resolvePromise(stdout.trim());
 					return;
 				}
-				reject(new Error(`${command} ${args.join(" ")} failed with code ${code}: ${stderr || stdout}`));
+				const exitStatus = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
+				reject(new Error(`${command} ${args.join(" ")} failed with ${exitStatus}: ${stderr || stdout}`));
 			});
 		});
 	}
 
 	private runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void> {
 		return new Promise((resolvePromise, reject) => {
-			const child = spawn(command, args, {
-				cwd: options?.cwd,
-				stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
-				shell: process.platform === "win32",
-			});
+			const child = this.spawnCommand(command, args, options);
 			child.on("error", reject);
 			child.on("exit", (code) => {
 				if (code === 0) {

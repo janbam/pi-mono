@@ -37,6 +37,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
   - [Extension Styles](#extension-styles)
 - [Events](#events)
   - [Lifecycle Overview](#lifecycle-overview)
+  - [Resource Events](#resource-events)
   - [Session Events](#session-events)
   - [Agent Events](#agent-events)
   - [Tool Events](#tool-events)
@@ -144,6 +145,8 @@ To share extensions via npm or git as pi packages, see [packages.md](packages.md
 
 npm dependencies work too. Add a `package.json` next to your extension (or in a parent directory), run `npm install`, and imports from `node_modules/` are resolved automatically.
 
+For distributed pi packages installed with `pi install` (npm or git), runtime deps must be in `dependencies`. Package installation uses production installs (`npm install --omit=dev`), so `devDependencies` are not available at runtime.
+
 Node.js built-ins (`node:fs`, `node:path`, etc.) are also available.
 
 ## Writing an Extension
@@ -225,10 +228,10 @@ Run `npm install` in the extension directory, then imports from `node_modules/` 
 ### Lifecycle Overview
 
 ```
-pi starts (CLI only)
+pi starts
   │
-  ├─► session_directory (CLI startup only, no ctx)
-  └─► session_start
+  ├─► session_start { reason: "startup" }
+  └─► resources_discover { reason: "startup" }
       │
       ▼
 user sends prompt ─────────────────────────────────────────┐
@@ -245,6 +248,7 @@ user sends prompt ────────────────────�
   │   ├─► turn_start                               │       │
   │   ├─► context (can modify messages)            │       │
   │   ├─► before_provider_request (can inspect or replace payload)
+  │   ├─► after_provider_response (status + headers, before stream consume)
   │   │                                            │       │
   │   │   LLM responds, may call tools:            │       │
   │   │     ├─► tool_execution_start               │       │
@@ -261,11 +265,15 @@ user sends another prompt ◄─────────────────
 
 /new (new session) or /resume (switch session)
   ├─► session_before_switch (can cancel)
-  └─► session_switch
+  ├─► session_shutdown
+  ├─► session_start { reason: "new" | "resume", previousSessionFile? }
+  └─► resources_discover { reason: "startup" }
 
 /fork
   ├─► session_before_fork (can cancel)
-  └─► session_fork
+  ├─► session_shutdown
+  ├─► session_start { reason: "fork", previousSessionFile }
+  └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
   ├─► session_before_compact (can cancel or customize)
@@ -278,48 +286,48 @@ user sends another prompt ◄─────────────────
 /model or Ctrl+P (model selection/cycling)
   └─► model_select
 
-exit (Ctrl+C, Ctrl+D)
+exit (Ctrl+C, Ctrl+D, SIGHUP, SIGTERM)
   └─► session_shutdown
+```
+
+### Resource Events
+
+#### resources_discover
+
+Fired after `session_start` so extensions can contribute additional skill, prompt, and theme paths.
+The startup path uses `reason: "startup"`. Reload uses `reason: "reload"`.
+
+```typescript
+pi.on("resources_discover", async (event, _ctx) => {
+  // event.cwd - current working directory
+  // event.reason - "startup" | "reload"
+  return {
+    skillPaths: ["/path/to/skills"],
+    promptPaths: ["/path/to/prompts"],
+    themePaths: ["/path/to/themes"],
+  };
+});
 ```
 
 ### Session Events
 
 See [session.md](session.md) for session storage internals and the SessionManager API.
 
-#### session_directory
-
-Fired by the `pi` CLI during startup session resolution, before the initial session manager is created.
-
-This event is:
-- CLI-only. It is not emitted in SDK mode.
-- Startup-only. It is not emitted for later interactive `/new` or `/resume` actions.
-- Lower priority than `--session-dir` and `sessionDir` in `settings.json`.
-- Special-cased to receive no `ctx` argument.
-
-If multiple extensions return `sessionDir`, the last one wins.
-Combined precedence is: `--session-dir` CLI flag, then `sessionDir` in settings, then extension `session_directory` hooks.
-
-```typescript
-pi.on("session_directory", async (event) => {
-  return {
-    sessionDir: `/tmp/pi-sessions/${encodeURIComponent(event.cwd)}`,
-  };
-});
-```
-
 #### session_start
 
-Fired on initial session load.
+Fired when a session is started, loaded, or reloaded.
 
 ```typescript
-pi.on("session_start", async (_event, ctx) => {
+pi.on("session_start", async (event, ctx) => {
+  // event.reason - "startup" | "reload" | "new" | "resume" | "fork"
+  // event.previousSessionFile - present for "new", "resume", and "fork"
   ctx.ui.notify(`Session: ${ctx.sessionManager.getSessionFile() ?? "ephemeral"}`, "info");
 });
 ```
 
-#### session_before_switch / session_switch
+#### session_before_switch
 
-Fired when starting a new session (`/new`) or switching sessions (`/resume`).
+Fired before starting a new session (`/new`) or switching sessions (`/resume`).
 
 ```typescript
 pi.on("session_before_switch", async (event, ctx) => {
@@ -331,14 +339,12 @@ pi.on("session_before_switch", async (event, ctx) => {
     if (!ok) return { cancel: true };
   }
 });
-
-pi.on("session_switch", async (event, ctx) => {
-  // event.reason - "new" or "resume"
-  // event.previousSessionFile - session we came from
-});
 ```
 
-#### session_before_fork / session_fork
+After a successful switch or new-session action, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "new" | "resume"` and `previousSessionFile`.
+Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
+
+#### session_before_fork
 
 Fired when forking via `/fork`.
 
@@ -349,11 +355,10 @@ pi.on("session_before_fork", async (event, ctx) => {
   // OR
   return { skipConversationRestore: true }; // Fork but don't rewind messages
 });
-
-pi.on("session_fork", async (event, ctx) => {
-  // event.previousSessionFile - previous session file
-});
 ```
+
+After a successful fork, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
+Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
 #### session_before_compact / session_compact
 
@@ -401,7 +406,7 @@ pi.on("session_tree", async (event, ctx) => {
 
 #### session_shutdown
 
-Fired on exit (Ctrl+C, Ctrl+D, SIGTERM).
+Fired on exit (Ctrl+C, Ctrl+D, SIGHUP, SIGTERM).
 
 ```typescript
 pi.on("session_shutdown", async (_event, ctx) => {
@@ -531,6 +536,22 @@ pi.on("before_provider_request", (event, ctx) => {
 ```
 
 This is mainly useful for debugging provider serialization and cache behavior.
+
+#### after_provider_response
+
+Fired after an HTTP response is received and before its stream body is consumed. Handlers run in extension load order.
+
+```typescript
+pi.on("after_provider_response", (event, ctx) => {
+  // event.status - HTTP status code
+  // event.headers - normalized response headers
+  if (event.status === 429) {
+    console.log("rate limited", event.headers["retry-after"]);
+  }
+});
+```
+
+Header availability depends on provider and transport. Providers that abstract HTTP responses may not expose headers.
 
 ### Model Events
 
@@ -735,9 +756,7 @@ Transforms chain across handlers. See [input-transform.ts](../examples/extension
 
 ## ExtensionContext
 
-All handlers except `session_directory` receive `ctx: ExtensionContext`.
-
-`session_directory` is a CLI startup hook and receives only the event.
+All handlers receive `ctx: ExtensionContext`.
 
 ### ctx.ui
 
@@ -920,6 +939,38 @@ Options:
 - `replaceInstructions`: If true, `customInstructions` replaces the default prompt instead of being appended
 - `label`: Label to attach to the branch summary entry (or target entry if not summarizing)
 
+### ctx.switchSession(sessionPath)
+
+Switch to a different session file:
+
+```typescript
+const result = await ctx.switchSession("/path/to/session.jsonl");
+if (result.cancelled) {
+  // An extension cancelled the switch via session_before_switch
+}
+```
+
+To discover available sessions, use the static `SessionManager.list()` or `SessionManager.listAll()` methods:
+
+```typescript
+import { SessionManager } from "@mariozechner/pi-coding-agent";
+
+pi.registerCommand("switch", {
+  description: "Switch to another session",
+  handler: async (args, ctx) => {
+    const sessions = await SessionManager.list(ctx.cwd);
+    if (sessions.length === 0) return;
+    const choice = await ctx.ui.select(
+      "Pick session:",
+      sessions.map(s => s.file),
+    );
+    if (choice) {
+      await ctx.switchSession(choice);
+    }
+  },
+});
+```
+
 ### ctx.reload()
 
 Run the same reload flow as `/reload`.
@@ -936,7 +987,7 @@ pi.registerCommand("reload-runtime", {
 
 Important behavior:
 - `await ctx.reload()` emits `session_shutdown` for the current extension runtime
-- It then reloads resources and emits `session_start` (and `resources_discover` with reason `"reload"`) for the new runtime
+- It then reloads resources and emits `session_start` with `reason: "reload"` and `resources_discover` with reason `"reload"`
 - The currently running command handler still continues in the old call frame
 - Code after `await ctx.reload()` still runs from the pre-reload version
 - Code after `await ctx.reload()` must not assume old in-memory extension state is still valid
@@ -1731,7 +1782,25 @@ export default function (pi: ExtensionAPI) {
 
 Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
 
-Tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is not defined, `tool-execution.ts` uses fallback rendering for that slot.
+By default, tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is not defined, `tool-execution.ts` uses fallback rendering for that slot.
+
+Set `renderShell: "self"` when the tool should render its own shell instead of using the default `Box`. This is useful for tools that need complete control over framing or background behavior, for example large previews that must stay visually stable after the tool settles.
+
+```typescript
+pi.registerTool({
+  name: "my_tool",
+  label: "My Tool",
+  description: "Custom shell example",
+  parameters: Type.Object({}),
+  renderShell: "self",
+  async execute() {
+    return { content: [{ type: "text", text: "ok" }], details: undefined };
+  },
+  renderCall(args, theme, context) {
+    return new Text(theme.fg("accent", "my custom shell"), 0, 0);
+  },
+});
+```
 
 `renderCall` and `renderResult` each receive a `context` object with:
 - `args` - the current tool call arguments
@@ -1818,7 +1887,7 @@ Custom editors and `ctx.ui.custom()` components receive `keybindings: Keybinding
 
 #### Best Practices
 
-- Use `Text` with padding `(0, 0)`. The Box handles padding.
+- Use `Text` with padding `(0, 0)`. The default Box handles padding.
 - Use `\n` for multi-line content.
 - Handle `isPartial` for streaming progress.
 - Support `expanded` for detail on demand.
@@ -1826,6 +1895,7 @@ Custom editors and `ctx.ui.custom()` components receive `keybindings: Keybinding
 - Read `context.args` in `renderResult` instead of copying args into `context.state`.
 - Use `context.state` only for data that must be shared across call and result slots.
 - Reuse `context.lastComponent` when the same component instance can be updated in place.
+- Use `renderShell: "self"` only when the default boxed shell gets in the way. In self-shell mode the tool is responsible for its own framing, padding, and background.
 
 #### Fallback
 
@@ -2180,14 +2250,14 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `dirty-repo-guard.ts` | Warn on dirty git repo | `on("session_before_*")`, `exec` |
 | `input-transform.ts` | Transform user input | `on("input")` |
 | `model-status.ts` | React to model changes | `on("model_select")`, `setStatus` |
-| `provider-payload.ts` | Inspect or patch provider payloads | `on("before_provider_request")` |
+| `provider-payload.ts` | Inspect payloads and provider response headers | `on("before_provider_request")`, `on("after_provider_response")` |
 | `system-prompt-header.ts` | Display system prompt info | `on("agent_start")`, `getSystemPrompt` |
 | `claude-rules.ts` | Load rules from files | `on("session_start")`, `on("before_agent_start")` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
 | `custom-compaction.ts` | Custom compaction summary | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
-| `git-checkpoint.ts` | Git stash on turns | `on("turn_end")`, `on("session_fork")`, `exec` |
+| `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |
 | **UI Components** |||
 | `status-line.ts` | Footer status indicator | `setStatus`, session events |

@@ -13,6 +13,7 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
+	ToolExecutionMode,
 } from "@mariozechner/pi-agent-core";
 import type {
 	Api,
@@ -74,7 +75,7 @@ import type {
 } from "../tools/index.js";
 
 export type { ExecOptions, ExecResult } from "../exec.js";
-export type { AgentToolResult, AgentToolUpdateCallback };
+export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.js";
 
 // ============================================================================
@@ -379,9 +380,20 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
+	/** Controls whether ToolExecutionComponent renders the standard colored shell or the tool renders its own framing. */
+	renderShell?: "default" | "self";
 
 	/** Optional compatibility shim to prepare raw tool call arguments before schema validation. Must return an object conforming to TParams. */
 	prepareArguments?: (args: unknown) => Static<TParams>;
+
+	/**
+	 * Per-tool execution mode override.
+	 * - "sequential": this tool must execute one at a time with other tool calls.
+	 * - "parallel": this tool can execute concurrently with other tool calls.
+	 *
+	 * If omitted, the default execution mode applies.
+	 */
+	executionMode?: ToolExecutionMode;
 
 	/** Execute the tool. */
 	execute(
@@ -402,6 +414,21 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 		theme: Theme,
 		context: ToolRenderContext<TState, Static<TParams>>,
 	) => Component;
+}
+
+type AnyToolDefinition = ToolDefinition<any, any, any>;
+
+/**
+ * Preserve parameter inference for standalone tool definitions.
+ *
+ * Use this when assigning a tool to a variable or passing it through arrays such
+ * as `customTools`, where contextual typing would otherwise widen params to
+ * `unknown`.
+ */
+export function defineTool<TParams extends TSchema, TDetails = unknown, TState = any>(
+	tool: ToolDefinition<TParams, TDetails, TState>,
+): ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition {
+	return tool;
 }
 
 // ============================================================================
@@ -426,15 +453,13 @@ export interface ResourcesDiscoverResult {
 // Session Events
 // ============================================================================
 
-/** Fired before session manager creation to allow custom session directory resolution */
-export interface SessionDirectoryEvent {
-	type: "session_directory";
-	cwd: string;
-}
-
-/** Fired on initial session load */
+/** Fired when a session is started, loaded, or reloaded */
 export interface SessionStartEvent {
 	type: "session_start";
+	/** Why this session start happened. */
+	reason: "startup" | "reload" | "new" | "resume" | "fork";
+	/** Previously active session file. Present for "new", "resume", and "fork". */
+	previousSessionFile?: string;
 }
 
 /** Fired before switching to another session (can be cancelled) */
@@ -444,23 +469,10 @@ export interface SessionBeforeSwitchEvent {
 	targetSessionFile?: string;
 }
 
-/** Fired after switching to another session */
-export interface SessionSwitchEvent {
-	type: "session_switch";
-	reason: "new" | "resume";
-	previousSessionFile: string | undefined;
-}
-
 /** Fired before forking a session (can be cancelled) */
 export interface SessionBeforeForkEvent {
 	type: "session_before_fork";
 	entryId: string;
-}
-
-/** Fired after forking a session */
-export interface SessionForkEvent {
-	type: "session_fork";
-	previousSessionFile: string | undefined;
 }
 
 /** Fired before context compaction (can be cancelled or customized) */
@@ -479,7 +491,7 @@ export interface SessionCompactEvent {
 	fromExtension: boolean;
 }
 
-/** Fired on process exit */
+/** Fired on graceful process shutdown paths such as Ctrl+C, Ctrl+D, SIGHUP, and SIGTERM. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
 }
@@ -516,12 +528,9 @@ export interface SessionTreeEvent {
 }
 
 export type SessionEvent =
-	| SessionDirectoryEvent
 	| SessionStartEvent
 	| SessionBeforeSwitchEvent
-	| SessionSwitchEvent
 	| SessionBeforeForkEvent
-	| SessionForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
 	| SessionShutdownEvent
@@ -542,6 +551,13 @@ export interface ContextEvent {
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
 	payload: unknown;
+}
+
+/** Fired after a provider response is received and before the response stream is consumed. */
+export interface AfterProviderResponseEvent {
+	type: "after_provider_response";
+	status: number;
+	headers: Record<string, string>;
 }
 
 /** Fired after user submits prompt but before agent loop. */
@@ -864,6 +880,7 @@ export type ExtensionEvent =
 	| SessionEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
+	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
@@ -917,16 +934,6 @@ export interface BeforeAgentStartEventResult {
 	systemPrompt?: string;
 }
 
-export interface SessionDirectoryResult {
-	/** Custom session directory path. If multiple extensions return this, the last one wins. */
-	sessionDir?: string;
-}
-
-/** Special startup-only handler. Unlike other events, this receives no ExtensionContext. */
-export type SessionDirectoryHandler = (
-	event: SessionDirectoryEvent,
-) => Promise<SessionDirectoryResult | undefined> | SessionDirectoryResult | undefined;
-
 export interface SessionBeforeSwitchResult {
 	cancel?: boolean;
 }
@@ -977,7 +984,7 @@ export interface RegisteredCommand {
 	name: string;
 	sourceInfo: SourceInfo;
 	description?: string;
-	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null;
+	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 }
 
@@ -1002,15 +1009,12 @@ export interface ExtensionAPI {
 	// =========================================================================
 
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
-	on(event: "session_directory", handler: SessionDirectoryHandler): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(
 		event: "session_before_switch",
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
 	): void;
-	on(event: "session_switch", handler: ExtensionHandler<SessionSwitchEvent>): void;
 	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
-	on(event: "session_fork", handler: ExtensionHandler<SessionForkEvent>): void;
 	on(
 		event: "session_before_compact",
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
@@ -1024,6 +1028,7 @@ export interface ExtensionAPI {
 		event: "before_provider_request",
 		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
 	): void;
+	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;

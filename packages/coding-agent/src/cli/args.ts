@@ -5,6 +5,7 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR } from "../config.js";
+import type { ExtensionFlag } from "../core/extensions/types.js";
 import { allTools, type ToolName } from "../core/tools/index.js";
 
 export type Mode = "text" | "json" | "rpc";
@@ -14,7 +15,7 @@ export interface Args {
 	model?: string;
 	apiKey?: string;
 	systemPrompt?: string;
-	appendSystemPrompt?: string;
+	appendSystemPrompt?: string[];
 	thinking?: ThinkingLevel;
 	continue?: boolean;
 	resume?: boolean;
@@ -38,6 +39,7 @@ export interface Args {
 	noPromptTemplates?: boolean;
 	themes?: string[];
 	noThemes?: boolean;
+	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
@@ -45,6 +47,7 @@ export interface Args {
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
 	unknownFlags: Map<string, boolean | string>;
+	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -53,11 +56,12 @@ export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
 }
 
-export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "boolean" | "string" }>): Args {
+export function parseArgs(args: string[]): Args {
 	const result: Args = {
 		messages: [],
 		fileArgs: [],
 		unknownFlags: new Map(),
+		diagnostics: [],
 	};
 
 	for (let i = 0; i < args.length; i++) {
@@ -85,7 +89,8 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
 			result.systemPrompt = args[++i];
 		} else if (arg === "--append-system-prompt" && i + 1 < args.length) {
-			result.appendSystemPrompt = args[++i];
+			result.appendSystemPrompt = result.appendSystemPrompt ?? [];
+			result.appendSystemPrompt.push(args[++i]);
 		} else if (arg === "--no-session") {
 			result.noSession = true;
 		} else if (arg === "--session" && i + 1 < args.length) {
@@ -105,9 +110,10 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 				if (name in allTools) {
 					validTools.push(name as ToolName);
 				} else {
-					console.error(
-						chalk.yellow(`Warning: Unknown tool "${name}". Valid tools: ${Object.keys(allTools).join(", ")}`),
-					);
+					result.diagnostics.push({
+						type: "warning",
+						message: `Unknown tool "${name}". Valid tools: ${Object.keys(allTools).join(", ")}`,
+					});
 				}
 			}
 			result.tools = validTools;
@@ -116,11 +122,10 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			if (isValidThinkingLevel(level)) {
 				result.thinking = level;
 			} else {
-				console.error(
-					chalk.yellow(
-						`Warning: Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
-					),
-				);
+				result.diagnostics.push({
+					type: "warning",
+					message: `Invalid thinking level "${level}". Valid values: ${VALID_THINKING_LEVELS.join(", ")}`,
+				});
 			}
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
@@ -146,6 +151,8 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.noPromptTemplates = true;
 		} else if (arg === "--no-themes") {
 			result.noThemes = true;
+		} else if (arg === "--no-context-files" || arg === "-nc") {
+			result.noContextFiles = true;
 		} else if (arg === "--list-models") {
 			// Check if next arg is a search pattern (not a flag or file arg)
 			if (i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@")) {
@@ -159,18 +166,22 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.offline = true;
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
-		} else if (arg.startsWith("--") && extensionFlags) {
-			// Check if it's an extension-registered flag
-			const flagName = arg.slice(2);
-			const extFlag = extensionFlags.get(flagName);
-			if (extFlag) {
-				if (extFlag.type === "boolean") {
+		} else if (arg.startsWith("--")) {
+			const eqIndex = arg.indexOf("=");
+			if (eqIndex !== -1) {
+				result.unknownFlags.set(arg.slice(2, eqIndex), arg.slice(eqIndex + 1));
+			} else {
+				const flagName = arg.slice(2);
+				const next = args[i + 1];
+				if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+					result.unknownFlags.set(flagName, next);
+					i++;
+				} else {
 					result.unknownFlags.set(flagName, true);
-				} else if (extFlag.type === "string" && i + 1 < args.length) {
-					result.unknownFlags.set(flagName, args[++i]);
 				}
 			}
-			// Unknown flags without extensionFlags are silently ignored (first pass)
+		} else if (arg.startsWith("-") && !arg.startsWith("--")) {
+			result.diagnostics.push({ type: "error", message: `Unknown option: ${arg}` });
 		} else if (!arg.startsWith("-")) {
 			result.messages.push(arg);
 		}
@@ -179,7 +190,17 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 	return result;
 }
 
-export function printHelp(): void {
+export function printHelp(extensionFlags?: ExtensionFlag[]): void {
+	const extensionFlagsText =
+		extensionFlags && extensionFlags.length > 0
+			? `\n${chalk.bold("Extension CLI Flags:")}\n${extensionFlags
+					.map((flag) => {
+						const value = flag.type === "string" ? " <value>" : "";
+						const description = flag.description ?? `Registered by ${flag.extensionPath}`;
+						return `  --${flag.name}${value}`.padEnd(30) + description;
+					})
+					.join("\n")}\n`
+			: "";
 	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write tools
 
 ${chalk.bold("Usage:")}
@@ -199,7 +220,7 @@ ${chalk.bold("Options:")}
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
-  --append-system-prompt <text>  Append text or file contents to the system prompt
+  --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
@@ -222,6 +243,7 @@ ${chalk.bold("Options:")}
   --no-prompt-templates, -np     Disable prompt template discovery and loading
   --theme <path>                 Load a theme file or directory (can be used multiple times)
   --no-themes                    Disable theme discovery and loading
+  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
@@ -229,7 +251,7 @@ ${chalk.bold("Options:")}
   --help, -h                     Show this help
   --version, -v                  Show version number
 
-Extensions can register additional flags (e.g., --plan from plan-mode extension).
+Extensions can register additional flags (e.g., --plan from plan-mode extension).${extensionFlagsText}
 
 ${chalk.bold("Examples:")}
   # Interactive mode
@@ -306,6 +328,7 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_AGENT_DIR.padEnd(32)} - Session storage directory (default: ~/${CONFIG_DIR_NAME}/agent)
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
+  PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
   PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
   PI_AI_ANTIGRAVITY_VERSION        - Override Antigravity User-Agent version (e.g., 1.23.0)
 
