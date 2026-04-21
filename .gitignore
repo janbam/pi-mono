@@ -36,7 +36,6 @@ packages/ai/src/models.generated.ts
 packages/coding-agent/binaries/
 todo.md
 plans/
-packages/ai/src/models.generated.ts
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
