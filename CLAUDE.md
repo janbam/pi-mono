@@ -9,7 +9,7 @@ This is a fork of `badlogic/pi-mono`.
 | Branch | Purpose |
 |--------|---------|
 | `main` | Our fork's working branch (default) — all work targets here |
-| `upstream` | Tracks upstream's latest release-tagged commit |
+| `upstream-release` | Tracks upstream's latest release-tagged commit (read-only mirror) |
 
 ## Workflow
 
@@ -20,30 +20,34 @@ This is a fork of `badlogic/pi-mono`.
 5. `git checkout main && git pull origin main` (pull merge commit locally)
 6. Delete the feature branch (`git branch -d <branch>`)
 
-## Maintaining the `upstream` branch
+## Maintaining the `upstream-release` branch
 
-The `upstream` branch tracks upstream's latest release. Update it when a new version is tagged:
+The `upstream-release` branch is a read-only mirror of upstream's latest release tag. Recreate it when a new version is tagged:
 
 ```bash
 git fetch upstream --tags
-git checkout upstream
-git merge --ff-only <latest-release-tag>   # e.g. v0.67.68
-git push origin upstream
+LATEST=$(git tag --sort=-v:refname | head -1)
+git branch -f upstream-release "$LATEST"
+git push origin upstream-release --force-with-lease
 git checkout main
 ```
 
 To find the latest release tag: `git tag --sort=-v:refname | head -5`
 
-## Syncing upstream into main
+## Syncing upstream-release into main
 
-Only when janbam says so:
+Only when janbam says so.
+
+**Abort and ask for clarification if `main` has uncommitted changes.**
 
 ```bash
-# Remove auto-generated file first to avoid merge conflicts
-rm packages/ai/src/models.generated.ts
-
 git checkout main
-git merge upstream
+# If the working tree is dirty, STOP and ask janbam before proceeding.
+
+# Discard any local build artifacts (auto-generated)
+rm -f packages/ai/src/models.generated.ts
+
+git merge upstream-release
 # resolve any conflicts
 git push origin main
 ```
