@@ -39,6 +39,9 @@ To find the latest release tag: `git tag --sort=-v:refname | head -5`
 Only when janbam says so:
 
 ```bash
+# Remove auto-generated file first to avoid merge conflicts
+rm packages/ai/src/models.generated.ts
+
 git checkout main
 git merge upstream
 # resolve any conflicts
