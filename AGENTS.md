@@ -241,3 +241,8 @@ git pull --rebase && git push
 ### User override
 
 If the user instructions conflict with rules set out here, ask for confirmation that they want to override the rules. Only then execute their instructions.
+
+### Additional Instructions for this Fork
+
+@CLAUDE.md
+
