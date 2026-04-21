@@ -26,6 +26,7 @@ import {
 	Container,
 	fuzzyFilter,
 	Loader,
+	type LoaderIndicatorOptions,
 	Markdown,
 	matchesKey,
 	ProcessTerminal,
@@ -65,6 +66,7 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
+import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
@@ -154,11 +156,6 @@ function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
 }
 
-function isTruthyEnvFlag(value: string | undefined): boolean {
-	if (!value) return false;
-	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
-}
-
 function isUnknownModel(model: Model<any> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
@@ -205,6 +202,7 @@ export class InteractiveMode {
 	private onInputCallback?: (text: string) => void;
 	private loadingAnimation: Loader | undefined = undefined;
 	private pendingWorkingMessage: string | undefined = undefined;
+	private workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
 	private readonly defaultWorkingMessage = "Working...";
 	private readonly defaultHiddenThinkingLabel = "Thinking...";
 	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
@@ -374,11 +372,7 @@ export class InteractiveMode {
 		return description ? `[${sourceTag}] ${description}` : `[${sourceTag}]`;
 	}
 
-	private getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner | undefined): ResourceDiagnostic[] {
-		if (!extensionRunner) {
-			return [];
-		}
-
+	private getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[] {
 		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
 		return extensionRunner
 			.getRegisteredCommands()
@@ -440,13 +434,14 @@ export class InteractiveMode {
 
 		// Convert extension commands to SlashCommand format
 		const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
-		const extensionCommands: SlashCommand[] = (
-			this.session.extensionRunner?.getRegisteredCommands().filter((cmd) => !builtinCommandNames.has(cmd.name)) ?? []
-		).map((cmd) => ({
-			name: cmd.invocationName,
-			description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
-			getArgumentCompletions: cmd.getArgumentCompletions,
-		}));
+		const extensionCommands: SlashCommand[] = this.session.extensionRunner
+			.getRegisteredCommands()
+			.filter((cmd) => !builtinCommandNames.has(cmd.name))
+			.map((cmd) => ({
+				name: cmd.invocationName,
+				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
+				getArgumentCompletions: cmd.getArgumentCompletions,
+			}));
 
 		// Build skill commands from session.skills (if enabled)
 		this.skillCommands.clear();
@@ -844,10 +839,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		const telemetryEnv = process.env.PI_TELEMETRY;
-		const telemetryEnabled =
-			telemetryEnv !== undefined ? isTruthyEnvFlag(telemetryEnv) : this.settingsManager.getEnableInstallTelemetry();
-		if (!telemetryEnabled) {
+		if (!isInstallTelemetryEnabled(this.settingsManager)) {
 			return;
 		}
 
@@ -1400,11 +1392,11 @@ export class InteractiveMode {
 				}
 			}
 
-			const commandDiagnostics = this.session.extensionRunner?.getCommandDiagnostics() ?? [];
+			const commandDiagnostics = this.session.extensionRunner.getCommandDiagnostics();
 			extensionDiagnostics.push(...commandDiagnostics);
 			extensionDiagnostics.push(...this.getBuiltInCommandConflictDiagnostics(this.session.extensionRunner));
 
-			const shortcutDiagnostics = this.session.extensionRunner?.getShortcutDiagnostics() ?? [];
+			const shortcutDiagnostics = this.session.extensionRunner.getShortcutDiagnostics();
 			extensionDiagnostics.push(...shortcutDiagnostics);
 
 			if (extensionDiagnostics.length > 0) {
@@ -1451,9 +1443,9 @@ export class InteractiveMode {
 						return this.handleFatalRuntimeError("Failed to create session", error);
 					}
 				},
-				fork: async (entryId) => {
+				fork: async (entryId, options) => {
 					try {
-						const result = await this.runtimeHost.fork(entryId);
+						const result = await this.runtimeHost.fork(entryId, options);
 						if (!result.cancelled) {
 							await this.handleRuntimeSessionChange();
 							this.renderCurrentSessionState();
@@ -1508,12 +1500,6 @@ export class InteractiveMode {
 		this.setupAutocomplete(this.fdPath);
 
 		const extensionRunner = this.session.extensionRunner;
-		if (!extensionRunner) {
-			this.showLoadedResources({ extensions: [], force: false });
-			this.showStartupNoticesIfNeeded();
-			return;
-		}
-
 		this.setupExtensionShortcuts(extensionRunner);
 		this.showLoadedResources({ force: false });
 		this.showStartupNoticesIfNeeded();
@@ -1634,6 +1620,12 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private setWorkingIndicator(options?: LoaderIndicatorOptions): void {
+		this.workingIndicatorOptions = options;
+		this.loadingAnimation?.setIndicator(options);
+		this.ui.requestRender();
+	}
+
 	private setHiddenThinkingLabel(label?: string): void {
 		this.hiddenThinkingLabel = label ?? this.defaultHiddenThinkingLabel;
 		for (const child of this.chatContainer.children) {
@@ -1724,6 +1716,8 @@ export class InteractiveMode {
 		this.setCustomEditorComponent(undefined);
 		this.defaultEditor.onExtensionShortcut = undefined;
 		this.updateTerminalTitle();
+		this.pendingWorkingMessage = undefined;
+		this.setWorkingIndicator();
 		if (this.loadingAnimation) {
 			this.loadingAnimation.setMessage(`${this.defaultWorkingMessage} (${keyText("app.interrupt")} to interrupt)`);
 		}
@@ -1886,6 +1880,7 @@ export class InteractiveMode {
 					this.pendingWorkingMessage = message;
 				}
 			},
+			setWorkingIndicator: (options) => this.setWorkingIndicator(options),
 			setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
 			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
 			setFooter: (factory) => this.setExtensionFooter(factory),
@@ -2432,6 +2427,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/clone") {
+				this.editor.setText("");
+				await this.handleCloneCommand();
+				return;
+			}
 			if (text === "/tree") {
 				this.showTreeSelector();
 				this.editor.setText("");
@@ -2579,6 +2579,7 @@ export class InteractiveMode {
 					(spinner) => theme.fg("accent", spinner),
 					(text) => theme.fg("muted", text),
 					this.defaultWorkingMessage,
+					this.workingIndicatorOptions,
 				);
 				this.statusContainer.addChild(this.loadingAnimation);
 				// Apply any pending working message queued before loader existed
@@ -2926,7 +2927,7 @@ export class InteractiveMode {
 			}
 			case "custom": {
 				if (message.display) {
-					const renderer = this.session.extensionRunner?.getMessageRenderer(message.customType);
+					const renderer = this.session.extensionRunner.getMessageRenderer(message.customType);
 					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
@@ -3530,7 +3531,6 @@ export class InteractiveMode {
 		if (!text.startsWith("/")) return false;
 
 		const extensionRunner = this.session.extensionRunner;
-		if (!extensionRunner) return false;
 
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
@@ -3977,29 +3977,61 @@ export class InteractiveMode {
 			return;
 		}
 
+		const initialSelectedId = userMessages[userMessages.length - 1]?.entryId;
+
 		this.showSelector((done) => {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
-					const result = await this.runtimeHost.fork(entryId);
-					if (result.cancelled) {
+					try {
+						const result = await this.runtimeHost.fork(entryId);
+						if (result.cancelled) {
+							done();
+							this.ui.requestRender();
+							return;
+						}
+
+						await this.handleRuntimeSessionChange();
+						this.renderCurrentSessionState();
+						this.editor.setText(result.selectedText ?? "");
 						done();
-						this.ui.requestRender();
-						return;
+						this.showStatus("Forked to new session");
+					} catch (error: unknown) {
+						done();
+						this.showError(error instanceof Error ? error.message : String(error));
 					}
-					await this.handleRuntimeSessionChange();
-					this.renderCurrentSessionState();
-					this.editor.setText(result.selectedText ?? "");
-					done();
-					this.showStatus("Branched to new session");
 				},
 				() => {
 					done();
 					this.ui.requestRender();
 				},
+				initialSelectedId,
 			);
 			return { component: selector, focus: selector.getMessageList() };
 		});
+	}
+
+	private async handleCloneCommand(): Promise<void> {
+		const leafId = this.sessionManager.getLeafId();
+		if (!leafId) {
+			this.showStatus("Nothing to clone yet");
+			return;
+		}
+
+		try {
+			const result = await this.runtimeHost.fork(leafId, { position: "at" });
+			if (result.cancelled) {
+				this.ui.requestRender();
+				return;
+			}
+
+			await this.handleRuntimeSessionChange();
+			this.renderCurrentSessionState();
+			this.editor.setText("");
+			this.showStatus("Cloned to new session");
+		} catch (error: unknown) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	private showTreeSelector(initialSelectedId?: string): void {
@@ -4445,9 +4477,7 @@ export class InteractiveMode {
 			this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 			this.setupAutocomplete(this.fdPath);
 			const runner = this.session.extensionRunner;
-			if (runner) {
-				this.setupExtensionShortcuts(runner);
-			}
+			this.setupExtensionShortcuts(runner);
 			this.rebuildChatFromMessages();
 			dismissReloadBox(this.editor as Component);
 			this.showLoadedResources({
@@ -4871,19 +4901,17 @@ export class InteractiveMode {
 
 		// Add extension-registered shortcuts
 		const extensionRunner = this.session.extensionRunner;
-		if (extensionRunner) {
-			const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
-			if (shortcuts.size > 0) {
-				hotkeys += `
+		const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
+		if (shortcuts.size > 0) {
+			hotkeys += `
 **Extensions**
 | Key | Action |
 |-----|--------|
 `;
-				for (const [key, shortcut] of shortcuts) {
-					const description = shortcut.description ?? shortcut.extensionPath;
-					const keyDisplay = key.replace(/\b\w/g, (c) => c.toUpperCase());
-					hotkeys += `| \`${keyDisplay}\` | ${description} |\n`;
-				}
+			for (const [key, shortcut] of shortcuts) {
+				const description = shortcut.description ?? shortcut.extensionPath;
+				const keyDisplay = key.replace(/\b\w/g, (c) => c.toUpperCase());
+				hotkeys += `| \`${keyDisplay}\` | ${description} |\n`;
 			}
 		}
 
@@ -4978,14 +5006,12 @@ export class InteractiveMode {
 		const extensionRunner = this.session.extensionRunner;
 
 		// Emit user_bash event to let extensions intercept
-		const eventResult = extensionRunner
-			? await extensionRunner.emitUserBash({
-					type: "user_bash",
-					command,
-					excludeFromContext,
-					cwd: this.sessionManager.getCwd(),
-				})
-			: undefined;
+		const eventResult = await extensionRunner.emitUserBash({
+			type: "user_bash",
+			command,
+			excludeFromContext,
+			cwd: this.sessionManager.getCwd(),
+		});
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.68.0] - 2026-04-20
+
+### Changed
+
+- Clarified parallel tool execution ordering docs to specify that final tool lifecycle and tool-result artifacts are emitted in tool completion order.
+
 ## [0.67.68] - 2026-04-17
 
 ## [0.67.67] - 2026-04-17

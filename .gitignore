@@ -32,6 +32,7 @@ syntax.jsonl
 out.jsonl
 pi-*.html
 out.html
+packages/ai/src/models.generated.ts
 packages/coding-agent/binaries/
 todo.md
 plans/

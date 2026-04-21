@@ -1947,23 +1947,6 @@ export const MODELS = {
 		} satisfies Model<"anthropic-messages">,
 	},
 	"azure-openai-responses": {
-		"codex-mini-latest": {
-			id: "codex-mini-latest",
-			name: "Codex Mini",
-			api: "azure-openai-responses",
-			provider: "azure-openai-responses",
-			baseUrl: "",
-			reasoning: true,
-			input: ["text"],
-			cost: {
-				input: 1.5,
-				output: 6,
-				cacheRead: 0.375,
-				cacheWrite: 0,
-			},
-			contextWindow: 200000,
-			maxTokens: 100000,
-		} satisfies Model<"azure-openai-responses">,
 		"gpt-4": {
 			id: "gpt-4",
 			name: "GPT-4",
@@ -2770,6 +2753,24 @@ export const MODELS = {
 			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"anthropic-messages">,
+		"claude-opus-4.7": {
+			id: "claude-opus-4.7",
+			name: "Claude Opus 4.7",
+			api: "anthropic-messages",
+			provider: "github-copilot",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			headers: {"User-Agent":"GitHubCopilotChat/0.35.0","Editor-Version":"vscode/1.107.0","Editor-Plugin-Version":"copilot-chat/0.35.0","Copilot-Integration-Id":"vscode-chat"},
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 144000,
+			maxTokens: 64000,
+		} satisfies Model<"anthropic-messages">,
 		"claude-sonnet-4": {
 			id: "claude-sonnet-4",
 			name: "Claude Sonnet 4",
@@ -3372,7 +3373,7 @@ export const MODELS = {
 			cost: {
 				input: 1.25,
 				output: 10,
-				cacheRead: 0.31,
+				cacheRead: 0.125,
 				cacheWrite: 0,
 			},
 			contextWindow: 1048576,
@@ -5322,23 +5323,6 @@ export const MODELS = {
 		} satisfies Model<"mistral-conversations">,
 	},
 	"openai": {
-		"codex-mini-latest": {
-			id: "codex-mini-latest",
-			name: "Codex Mini",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1",
-			reasoning: true,
-			input: ["text"],
-			cost: {
-				input: 1.5,
-				output: 6,
-				cacheRead: 0.375,
-				cacheWrite: 0,
-			},
-			contextWindow: 200000,
-			maxTokens: 100000,
-		} satisfies Model<"openai-responses">,
 		"gpt-4": {
 			id: "gpt-4",
 			name: "GPT-4",
@@ -6726,6 +6710,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "opencode",
 			baseUrl: "https://opencode.ai/zen/v1",
+			compat: {"cacheControlFormat":"anthropic"},
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
@@ -6743,6 +6728,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "opencode",
 			baseUrl: "https://opencode.ai/zen/v1",
+			compat: {"cacheControlFormat":"anthropic"},
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
@@ -6844,9 +6830,9 @@ export const MODELS = {
 		"minimax-m2.5": {
 			id: "minimax-m2.5",
 			name: "MiniMax M2.5",
-			api: "anthropic-messages",
+			api: "openai-completions",
 			provider: "opencode-go",
-			baseUrl: "https://opencode.ai/zen/go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
 			reasoning: true,
 			input: ["text"],
 			cost: {
@@ -6856,8 +6842,8 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 204800,
-			maxTokens: 131072,
-		} satisfies Model<"anthropic-messages">,
+			maxTokens: 65536,
+		} satisfies Model<"openai-completions">,
 		"minimax-m2.7": {
 			id: "minimax-m2.7",
 			name: "MiniMax M2.7",
@@ -6881,6 +6867,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "opencode-go",
 			baseUrl: "https://opencode.ai/zen/go/v1",
+			compat: {"cacheControlFormat":"anthropic"},
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
@@ -6898,6 +6885,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "opencode-go",
 			baseUrl: "https://opencode.ai/zen/go/v1",
+			compat: {"cacheControlFormat":"anthropic"},
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
@@ -7529,7 +7517,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: true,
+			reasoning: false,
 			input: ["text"],
 			cost: {
 				input: 0.19999999999999998,
@@ -7617,13 +7605,13 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text"],
 			cost: {
-				input: 0.26,
-				output: 0.38,
-				cacheRead: 0.13,
+				input: 0.25899999999999995,
+				output: 0.42,
+				cacheRead: 0.135,
 				cacheWrite: 0,
 			},
 			contextWindow: 163840,
-			maxTokens: 4096,
+			maxTokens: 163840,
 		} satisfies Model<"openai-completions">,
 		"deepseek/deepseek-v3.2-exp": {
 			id: "deepseek/deepseek-v3.2-exp",
@@ -7673,7 +7661,7 @@ export const MODELS = {
 				cacheRead: 0.024999999999999998,
 				cacheWrite: 0.08333333333333334,
 			},
-			contextWindow: 1048576,
+			contextWindow: 1000000,
 			maxTokens: 8192,
 		} satisfies Model<"openai-completions">,
 		"google/gemini-2.0-flash-lite-001": {
@@ -7872,13 +7860,13 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
-				input: 0.07,
-				output: 0.39999999999999997,
-				cacheRead: 0.04,
+				input: 0.08,
+				output: 0.35,
+				cacheRead: 0.01,
 				cacheWrite: 0,
 			},
 			contextWindow: 262144,
-			maxTokens: 262144,
+			maxTokens: 4096,
 		} satisfies Model<"openai-completions">,
 		"google/gemma-4-26b-a4b-it:free": {
 			id: "google/gemma-4-26b-a4b-it:free",
@@ -8025,13 +8013,13 @@ export const MODELS = {
 			reasoning: false,
 			input: ["text"],
 			cost: {
-				input: 0.09999999999999999,
-				output: 0.32,
+				input: 0.12,
+				output: 0.38,
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
 			contextWindow: 131072,
-			maxTokens: 16384,
+			maxTokens: 131072,
 		} satisfies Model<"openai-completions">,
 		"meta-llama/llama-3.3-70b-instruct:free": {
 			id: "meta-llama/llama-3.3-70b-instruct:free",
@@ -8049,23 +8037,6 @@ export const MODELS = {
 			},
 			contextWindow: 65536,
 			maxTokens: 4096,
-		} satisfies Model<"openai-completions">,
-		"meta-llama/llama-4-maverick": {
-			id: "meta-llama/llama-4-maverick",
-			name: "Meta: Llama 4 Maverick",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: {
-				input: 0.15,
-				output: 0.6,
-				cacheRead: 0,
-				cacheWrite: 0,
-			},
-			contextWindow: 1048576,
-			maxTokens: 16384,
 		} satisfies Model<"openai-completions">,
 		"meta-llama/llama-4-scout": {
 			id: "meta-llama/llama-4-scout",
@@ -8722,9 +8693,9 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text"],
 			cost: {
-				input: 0.09999999999999999,
-				output: 0.5,
-				cacheRead: 0.09999999999999999,
+				input: 0.09,
+				output: 0.44999999999999996,
+				cacheRead: 0,
 				cacheWrite: 0,
 			},
 			contextWindow: 262144,
@@ -9103,23 +9074,6 @@ export const MODELS = {
 			},
 			contextWindow: 128000,
 			maxTokens: 16384,
-		} satisfies Model<"openai-completions">,
-		"openai/gpt-4o:extended": {
-			id: "openai/gpt-4o:extended",
-			name: "OpenAI: GPT-4o (extended)",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: {
-				input: 6,
-				output: 18,
-				cacheRead: 0,
-				cacheWrite: 0,
-			},
-			contextWindow: 128000,
-			maxTokens: 64000,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-5": {
 			id: "openai/gpt-5",
@@ -10011,7 +9965,7 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
-			reasoning: true,
+			reasoning: false,
 			input: ["text"],
 			cost: {
 				input: 0.071,
@@ -10507,13 +10461,13 @@ export const MODELS = {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: {
-				input: 0.049999999999999996,
+				input: 0.09999999999999999,
 				output: 0.15,
 				cacheRead: 0,
 				cacheWrite: 0,
 			},
-			contextWindow: 256000,
-			maxTokens: 32768,
+			contextWindow: 262144,
+			maxTokens: 4096,
 		} satisfies Model<"openai-completions">,
 		"qwen/qwen3.5-flash-02-23": {
 			id: "qwen/qwen3.5-flash-02-23",
@@ -13069,7 +13023,7 @@ export const MODELS = {
 		} satisfies Model<"anthropic-messages">,
 		"openai/gpt-oss-20b": {
 			id: "openai/gpt-oss-20b",
-			name: "gpt-oss-20b",
+			name: "GPT OSS 120B",
 			api: "anthropic-messages",
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
@@ -13086,7 +13040,7 @@ export const MODELS = {
 		} satisfies Model<"anthropic-messages">,
 		"openai/gpt-oss-safeguard-20b": {
 			id: "openai/gpt-oss-safeguard-20b",
-			name: "gpt-oss-safeguard-20b",
+			name: "GPT OSS Safeguard 20B",
 			api: "anthropic-messages",
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
@@ -13346,7 +13300,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: false,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 0.19999999999999998,
 				output: 0.5,
@@ -13363,7 +13317,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 0.19999999999999998,
 				output: 0.5,
@@ -13380,7 +13334,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: false,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 0.19999999999999998,
 				output: 0.5,
@@ -13397,7 +13351,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 0.19999999999999998,
 				output: 0.5,
@@ -13414,7 +13368,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 2,
 				output: 6,
@@ -13431,7 +13385,7 @@ export const MODELS = {
 			provider: "vercel-ai-gateway",
 			baseUrl: "https://ai-gateway.vercel.sh",
 			reasoning: true,
-			input: ["text"],
+			input: ["text", "image"],
 			cost: {
 				input: 2,
 				output: 6,
