@@ -49,5 +49,15 @@ rm -f packages/ai/src/models.generated.ts
 
 git merge upstream-release
 # resolve any conflicts
+
+# Update dependencies and rebuild
+npm install
+npm run build
+npm run check
+
+# Address any build errors
+# Ask the user to smoke test the new build
+
+# When everything is good, commit and push
 git push origin main
 ```
