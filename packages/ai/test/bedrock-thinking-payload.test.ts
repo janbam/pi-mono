@@ -52,6 +52,7 @@ describe("Bedrock thinking payload", () => {
 			...baseModel,
 			id: "global.anthropic.claude-opus-4-7-v1",
 			name: "Claude Opus 4.7 (Global)",
+			thinkingLevelMap: { xhigh: "xhigh" },
 		};
 
 		const payload = await capturePayload(model);
@@ -67,6 +68,7 @@ describe("Bedrock thinking payload", () => {
 			...baseModel,
 			id: "global.anthropic.claude-opus-4-7-v1",
 			name: "Claude Opus 4.7 (Global)",
+			thinkingLevelMap: { xhigh: "xhigh" },
 		};
 
 		const payload = await capturePayload(model, { reasoning: "xhigh" });
