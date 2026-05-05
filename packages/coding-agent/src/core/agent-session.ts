@@ -21,6 +21,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AgentToolResult,
 	ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
@@ -810,6 +811,23 @@ export class AgentSession {
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
+	}
+
+	/**
+	 * Execute an active tool by name for extensions that intentionally wrap tool use.
+	 */
+	async executeToolByName(
+		name: string,
+		input: unknown,
+		options?: { signal?: AbortSignal },
+	): Promise<AgentToolResult<unknown>> {
+		const tool = this._toolRegistry.get(name);
+		if (!tool || !this.getActiveToolNames().includes(name)) {
+			throw new Error(`Unknown active tool: ${name}`);
+		}
+
+		const prepared = tool.prepareArguments ? tool.prepareArguments(input) : (input as Record<string, unknown>);
+		return tool.execute(`extension-${name}-${Date.now()}`, prepared, options?.signal ?? this.agent.signal, undefined);
 	}
 
 	/**
@@ -2185,6 +2203,7 @@ export class AgentSession {
 					this.sessionManager.appendLabelChange(entryId, label);
 				},
 				getActiveTools: () => this.getActiveToolNames(),
+				executeTool: (name, input, options) => this.executeToolByName(name, input, options),
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
