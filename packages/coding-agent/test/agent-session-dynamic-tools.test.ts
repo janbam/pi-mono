@@ -91,6 +91,57 @@ describe("AgentSession dynamic tool registration", () => {
 		session.dispose();
 	});
 
+	it("lets extensions execute active tools by name", async () => {
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.inMemory();
+		let observedResult: unknown;
+
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_start", async () => {
+						pi.registerTool({
+							name: "inner_tool",
+							label: "Inner Tool",
+							description: "Tool invoked through executeTool",
+							parameters: Type.Object({
+								message: Type.String(),
+							}),
+							execute: async (_toolCallId, params) => ({
+								content: [{ type: "text", text: `inner:${params.message}` }],
+								details: { message: params.message },
+							}),
+						});
+
+						observedResult = await pi.executeTool("inner_tool", { message: "ok" });
+					});
+				},
+			],
+		});
+		await resourceLoader.reload();
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+
+		await session.bindExtensions({});
+
+		expect(observedResult).toMatchObject({
+			content: [{ type: "text", text: "inner:ok" }],
+			details: { message: "ok" },
+		});
+
+		session.dispose();
+	});
+
 	it("returns source metadata for SDK custom tools", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory();

@@ -1208,6 +1208,9 @@ export interface ExtensionAPI {
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
+	/** Execute an active Pi tool by name from extension code. */
+	executeTool(name: string, input: unknown, options?: { signal?: AbortSignal }): Promise<AgentToolResult<unknown>>;
+
 	/** Get the list of currently active tool names. */
 	getActiveTools(): string[];
 
@@ -1422,6 +1425,12 @@ export type GetSessionNameHandler = () => string | undefined;
 
 export type GetActiveToolsHandler = () => string[];
 
+export type ExecuteToolHandler = (
+	name: string,
+	input: unknown,
+	options?: { signal?: AbortSignal },
+) => Promise<AgentToolResult<unknown>>;
+
 /** Tool info with name, description, parameter schema, and source metadata */
 export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters"> & {
 	sourceInfo: SourceInfo;
@@ -1477,6 +1486,7 @@ export interface ExtensionActions {
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;
 	getActiveTools: GetActiveToolsHandler;
+	executeTool: ExecuteToolHandler;
 	getAllTools: GetAllToolsHandler;
 	setActiveTools: SetActiveToolsHandler;
 	refreshTools: RefreshToolsHandler;

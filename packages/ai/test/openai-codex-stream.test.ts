@@ -455,6 +455,7 @@ describe("openai-codex streaming", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 400000,
 			maxTokens: 128000,
+			thinkingLevelMap: { xhigh: "xhigh" },
 		};
 		const context: Context = {
 			systemPrompt: "You are a helpful assistant.",

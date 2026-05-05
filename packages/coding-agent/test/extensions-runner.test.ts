@@ -59,6 +59,7 @@ describe("ExtensionRunner", () => {
 		getSessionName: () => undefined,
 		setLabel: () => {},
 		getActiveTools: () => [],
+		executeTool: async () => ({ content: [], details: {} }),
 		getAllTools: () => [],
 		setActiveTools: () => {},
 		refreshTools: () => {},

@@ -150,6 +150,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
 		getActiveTools: notInitialized,
+		executeTool: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getAllTools: notInitialized,
 		setActiveTools: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
@@ -290,6 +291,11 @@ function createExtensionAPI(
 		getActiveTools(): string[] {
 			runtime.assertActive();
 			return runtime.getActiveTools();
+		},
+
+		executeTool(name: string, input: unknown, options?: { signal?: AbortSignal }) {
+			runtime.assertActive();
+			return runtime.executeTool(name, input, options);
 		},
 
 		getAllTools() {
