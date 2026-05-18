@@ -208,7 +208,7 @@ Multiple agents may work on different files in the same worktree simultaneously.
 - ALWAYS use `git add <specific-file-paths>` listing only files you modified
 - Before committing, run `git status` and verify you are only staging YOUR files
 - Track which files you created/modified/deleted during the session
-- It is always fine to include `packages/ai/src/models.generated.ts` in a commit alongside the actual files you want to commit
+- It is always fine to include `packages/ai/src/models.generated.ts` or `packages/ai/src/image-models.generated.ts` in a commit alongside the actual files you want to commit
 
 ### Forbidden Git Operations
 
@@ -297,7 +297,7 @@ git checkout main
 # If the working tree is dirty, STOP and ask janbam before proceeding.
 
 # Discard any local build artifacts (auto-generated)
-rm -f packages/ai/src/models.generated.ts
+rm -f packages/ai/src/models.generated.ts packages/ai/src/image-models.generated.ts
 
 git merge upstream-release
 # resolve any conflicts
