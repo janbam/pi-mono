@@ -293,6 +293,9 @@ Only update when instructed to do so.
 **Abort and ask for clarification if `main` has uncommitted changes.**
 
 ```bash
+# Early exit: if main already contains the latest upstream-release, stop immediately.
+git merge-base --is-ancestor upstream-release main && echo "Already up to date — nothing to merge." && exit 0
+
 git checkout main
 # If the working tree is dirty, STOP and ask janbam before proceeding.
 
