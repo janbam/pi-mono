@@ -262,6 +262,8 @@ To find the latest release tag: `git tag --sort=-v:refname | head -5`
 
 Only update when instructed to do so.
 
+> **Always refresh `upstream-release` first** (see previous section) before running the merge. The early-exit check below is only meaningful if `upstream-release` already points at the latest upstream tag. Check current upstream releases at <https://github.com/earendil-works/pi/releases> and compare against the tag on `upstream-release`.
+
 **Abort and ask for clarification if `main` has uncommitted changes.**
 
 ```bash
