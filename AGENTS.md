@@ -233,6 +233,12 @@ This is a fork of `badlogic/pi-mono`.
 5. `git checkout main && git pull origin main` (pull merge commit locally)
 6. Delete the feature branch (`git branch -d <branch>`)
 
+## Build After Code Changes
+
+This fork overrides the general command rule that forbids `npm run build` unless explicitly requested.
+
+After finishing any code change in this fork, run `npm run build` before the required `npm run check`. The build is part of the normal verification loop here because stale compiled artifacts can make the runnable `pi` disagree with the updated source.
+
 ## Maintaining the `upstream-release` branch
 
 The `upstream-release` branch is a read-only mirror of upstream's latest release tag. Recreate it when a new version is tagged:
