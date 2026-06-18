@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed OpenCode Go GLM-5.2 thinking requests to send `reasoning_effort` without the incompatible `thinking` field.
+- Fixed Z.AI GLM-5.1/GLM-5.2 and OpenRouter `z-ai/glm-5.2` thinking requests to set `thinking.clear_thinking: false` so prior reasoning context is preserved.
 
 ## [0.79.6] - 2026-06-16
 

@@ -100,6 +100,20 @@ type ChatCompletionToolWithCacheControl = OpenAI.Chat.Completions.ChatCompletion
 	cache_control?: OpenAICompatCacheControl;
 };
 
+type ZaiThinkingConfig = {
+	type: "enabled" | "disabled";
+	clear_thinking?: false;
+};
+
+/**
+ * Returns whether a Z.AI model route needs explicit thinking-context preservation.
+ */
+function shouldPreserveZaiThinkingContext(model: Model<"openai-completions">): boolean {
+	const directZaiGlm = model.provider !== "openrouter" && (model.id === "glm-5.1" || model.id === "glm-5.2");
+	const openRouterZaiGlm = model.provider === "openrouter" && model.id === "z-ai/glm-5.2";
+	return directZaiGlm || openRouterZaiGlm;
+}
+
 function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEnv): CacheRetention {
 	if (cacheRetention) {
 		return cacheRetention;
@@ -558,10 +572,15 @@ function buildParams(
 
 	if (compat.thinkingFormat === "zai" && model.reasoning) {
 		const zaiParams = params as Omit<typeof params, "reasoning_effort"> & {
-			thinking?: { type: "enabled" | "disabled" };
+			thinking?: ZaiThinkingConfig;
 			reasoning_effort?: string;
 		};
-		zaiParams.thinking = { type: options?.reasoningEffort ? "enabled" : "disabled" };
+		const thinkingEnabled = !!options?.reasoningEffort;
+		zaiParams.thinking = { type: thinkingEnabled ? "enabled" : "disabled" };
+		if (thinkingEnabled && shouldPreserveZaiThinkingContext(model)) {
+			// GLM-5.1/5.2 clear previous thinking by default unless this provider flag disables that reset.
+			zaiParams.thinking.clear_thinking = false;
+		}
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			const mappedEffort = model.thinkingLevelMap?.[options.reasoningEffort];
 			const effort = mappedEffort === undefined ? options.reasoningEffort : mappedEffort;
@@ -588,11 +607,18 @@ function buildParams(
 		}
 	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
-		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
+		const openRouterParams = params as typeof params & {
+			reasoning?: { effort?: string };
+			thinking?: ZaiThinkingConfig;
+		};
 		if (options?.reasoningEffort) {
 			openRouterParams.reasoning = {
 				effort: model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort,
 			};
+			if (shouldPreserveZaiThinkingContext(model)) {
+				// OpenRouter forwards provider-specific parameters, so preserve Z.AI's thinking context alongside reasoning.
+				openRouterParams.thinking = { type: "enabled", clear_thinking: false };
+			}
 		} else if (model.thinkingLevelMap?.off !== null) {
 			openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
 		}
