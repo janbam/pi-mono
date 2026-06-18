@@ -17,6 +17,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 	});
 }
 
+import { getProviderEnvValue } from "../provider-env.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -28,7 +29,6 @@ import type {
 	OAuthProviderInterface,
 } from "./types.ts";
 
-const CALLBACK_HOST = process.env.PI_OAUTH_CALLBACK_HOST || "127.0.0.1";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE_URL = "https://auth.openai.com";
 const AUTHORIZE_URL = `${AUTH_BASE_URL}/oauth/authorize`;
@@ -46,6 +46,10 @@ const JWT_CLAIM_PATH = "https://api.openai.com/auth";
 
 type OAuthToken = { access: string; refresh: string; expires: number };
 type TokenOperation = "exchange" | "refresh";
+
+function getCallbackHost(): string {
+	return getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
+}
 
 type DeviceAuthInfo = {
 	deviceAuthId: string;
@@ -368,7 +372,7 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 
 	return new Promise((resolve) => {
 		server
-			.listen(1455, CALLBACK_HOST, () => {
+			.listen(1455, getCallbackHost(), () => {
 				resolve({
 					close: () => server.close(),
 					cancelWait: () => {
