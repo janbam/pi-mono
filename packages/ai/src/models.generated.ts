@@ -8627,9 +8627,9 @@ export const MODELS = {
 			api: "openai-completions",
 			provider: "opencode-go",
 			baseUrl: "https://opencode.ai/zen/go/v1",
-			compat: {"thinkingFormat":"zai","supportsReasoningEffort":true,"supportsDeveloperRole":false,"maxTokensField":"max_tokens"},
+			compat: {"thinkingFormat":"openai","supportsReasoningEffort":true,"supportsDeveloperRole":false,"maxTokensField":"max_tokens"},
 			reasoning: true,
-			thinkingLevelMap: {"minimal":null,"low":"high","medium":"high","high":"high","xhigh":"max"},
+			thinkingLevelMap: {"off":"none","minimal":null,"low":"high","medium":"high","high":"high","xhigh":"max"},
 			input: ["text"],
 			cost: {
 				input: 1.4,

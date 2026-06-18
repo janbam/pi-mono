@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed OpenCode Go GLM-5.2 thinking requests to send `reasoning_effort` without the incompatible `thinking` field.
+
 ## [0.79.6] - 2026-06-16
 
 ### Fixed

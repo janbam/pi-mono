@@ -271,6 +271,25 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
+	it("stores OpenCode Go GLM-5.2 reasoning-effort-only metadata", () => {
+		const model = getModel("opencode-go", "glm-5.2")!;
+
+		expect(model.compat).toMatchObject({
+			thinkingFormat: "openai",
+			supportsReasoningEffort: true,
+			supportsDeveloperRole: false,
+			maxTokensField: "max_tokens",
+		});
+		expect(model.thinkingLevelMap).toEqual({
+			off: "none",
+			minimal: null,
+			low: "high",
+			medium: "high",
+			high: "high",
+			xhigh: "max",
+		});
+	});
+
 	it("maps z.ai GLM-5.2 thinking levels to reasoning_effort", async () => {
 		const model = getModel("zai", "glm-5.2")!;
 		const cases = [
@@ -335,6 +354,72 @@ describe("openai-completions tool_choice", () => {
 		const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
 		expect(params.thinking).toEqual({ type: "disabled" });
 		expect(params.reasoning_effort).toBeUndefined();
+	});
+
+	it("maps OpenCode Go GLM-5.2 thinking levels to reasoning_effort without thinking", async () => {
+		const model = getModel("opencode-go", "glm-5.2")!;
+		const cases = [
+			{ reasoning: "low", effort: "high" },
+			{ reasoning: "medium", effort: "high" },
+			{ reasoning: "high", effort: "high" },
+			{ reasoning: "xhigh", effort: "max" },
+		] as const;
+
+		for (const testCase of cases) {
+			let payload: unknown;
+
+			await streamSimple(
+				model,
+				{
+					messages: [
+						{
+							role: "user",
+							content: "Hi",
+							timestamp: Date.now(),
+						},
+					],
+				},
+				{
+					apiKey: "test",
+					reasoning: testCase.reasoning,
+					onPayload: (params: unknown) => {
+						payload = params;
+					},
+				},
+			).result();
+
+			const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
+			expect(params.thinking).toBeUndefined();
+			expect(params.reasoning_effort).toBe(testCase.effort);
+		}
+	});
+
+	it("maps OpenCode Go GLM-5.2 thinking off to reasoning_effort none", async () => {
+		const model = getModel("opencode-go", "glm-5.2")!;
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [
+					{
+						role: "user",
+						content: "Hi",
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
+		expect(params.thinking).toBeUndefined();
+		expect(params.reasoning_effort).toBe("none");
 	});
 
 	it("omits tool_stream for unsupported z.ai models", async () => {
