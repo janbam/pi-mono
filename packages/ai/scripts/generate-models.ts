@@ -1143,6 +1143,17 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat = { ...(compat ?? {}), thinkingFormat: "deepseek", supportsReasoningEffort: false };
 				}
 
+			// GLM-5.2 through OpenCode Go uses Z.AI thinking format
+			// (thinking.type + reasoning_effort) via the OpenAI-compatible endpoint.
+			if (variant.provider === "opencode-go" && modelId === "glm-5.2") {
+				compat = {
+					...(compat ?? {}),
+					thinkingFormat: "zai",
+					supportsReasoningEffort: true,
+					supportsDeveloperRole: false,
+				};
+			}
+
 				// Fix known mismatches between models.dev npm data and actual
 				// OpenCode Go endpoint behaviour. models.dev reports these models
 				// as @ai-sdk/anthropic, but the OpenCode Go endpoints either don't
@@ -1174,6 +1185,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
+			// GLM-5.2 thinking level map: low→high, medium→high, high→high, xhigh→max
+			const thinkingLevelMap =
+				variant.provider === "opencode-go" && modelId === "glm-5.2"
+					? ZAI_GLM52_THINKING_LEVEL_MAP
+					: undefined;
+
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -1181,6 +1198,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: variant.provider,
 					baseUrl,
 					reasoning: m.reasoning === true,
+					...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,
