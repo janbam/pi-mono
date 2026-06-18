@@ -164,6 +164,14 @@ const ZAI_GLM52_THINKING_LEVEL_MAP = {
 	high: "high",
 	xhigh: "max",
 } as const;
+const OPENCODE_GO_GLM52_THINKING_LEVEL_MAP = {
+	off: "none",
+	minimal: null,
+	low: "high",
+	medium: "high",
+	high: "high",
+	xhigh: "max",
+} as const;
 const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 	"github-copilot:claude-haiku-4.5",
 	"github-copilot:claude-sonnet-4",
@@ -1143,16 +1151,17 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat = { ...(compat ?? {}), thinkingFormat: "deepseek", supportsReasoningEffort: false };
 				}
 
-			// GLM-5.2 through OpenCode Go uses Z.AI thinking format
-			// (thinking.type + reasoning_effort) via the OpenAI-compatible endpoint.
-			if (variant.provider === "opencode-go" && modelId === "glm-5.2") {
-				compat = {
-					...(compat ?? {}),
-					thinkingFormat: "zai",
-					supportsReasoningEffort: true,
-					supportsDeveloperRole: false,
-				};
-			}
+				if (variant.provider === "opencode-go" && modelId === "glm-5.2") {
+					// OpenCode Go currently routes GLM-5.2 through a Fireworks-backed endpoint.
+					// It accepts reasoning_effort alone and rejects the direct Z.AI
+					// thinking-plus-effort payload with "cannot specify both".
+					compat = {
+						...(compat ?? {}),
+						thinkingFormat: "openai",
+						supportsReasoningEffort: true,
+						supportsDeveloperRole: false,
+					};
+				}
 
 				// Fix known mismatches between models.dev npm data and actual
 				// OpenCode Go endpoint behaviour. models.dev reports these models
@@ -1185,11 +1194,11 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
-			// GLM-5.2 thinking level map: low→high, medium→high, high→high, xhigh→max
-			const thinkingLevelMap =
-				variant.provider === "opencode-go" && modelId === "glm-5.2"
-					? ZAI_GLM52_THINKING_LEVEL_MAP
-					: undefined;
+				// GLM-5.2 thinking level map: low→high, medium→high, high→high, xhigh→max.
+				const thinkingLevelMap =
+					variant.provider === "opencode-go" && modelId === "glm-5.2"
+						? OPENCODE_GO_GLM52_THINKING_LEVEL_MAP
+						: undefined;
 
 				models.push({
 					id: modelId,
