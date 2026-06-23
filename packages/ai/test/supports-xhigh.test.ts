@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getModel, getSupportedThinkingLevels } from "../src/models.ts";
+import { getModel, getSupportedThinkingLevels } from "../src/compat.ts";
 
 describe("getSupportedThinkingLevels", () => {
 	it("includes xhigh for Anthropic Opus 4.6 on anthropic-messages API", () => {
@@ -67,6 +67,15 @@ describe("getSupportedThinkingLevels", () => {
 		const model = getModel("opencode-go", "kimi-k2.6");
 		expect(model).toBeDefined();
 		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high"]);
+	});
+
+	// Upstream #5967: OpenCode Go GLM-5.2 exposes only high/xhigh reasoning;
+	// off/minimal/low/medium are unsupported (null in thinkingLevelMap), so the
+	// supported set excludes off unlike the DeepSeek V4 Flash / Kimi K2.6 cases.
+	it("includes only high/xhigh for OpenCode Go GLM-5.2 (upstream #5967)", () => {
+		const model = getModel("opencode-go", "glm-5.2");
+		expect(model).toBeDefined();
+		expect(getSupportedThinkingLevels(model!)).toEqual(["high", "xhigh"]);
 	});
 
 	it("excludes thinking off for Moonshot Kimi K2.7 Code models", () => {

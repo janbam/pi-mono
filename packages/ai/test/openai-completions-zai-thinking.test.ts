@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { streamSimple } from "../src/index.ts";
-import { getModel } from "../src/models.ts";
+import { getModel, streamSimple } from "../src/compat.ts";
 
 type CapturedZaiParams = {
 	thinking?: {

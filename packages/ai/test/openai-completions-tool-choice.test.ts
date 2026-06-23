@@ -1,8 +1,7 @@
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { stream, streamSimple } from "../src/index.ts";
-import { getModel } from "../src/models.ts";
-import { convertMessages } from "../src/providers/openai-completions.ts";
+import { convertMessages } from "../src/api/openai-completions.ts";
+import { getModel, stream, streamSimple } from "../src/compat.ts";
 import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
 
 const mockState = vi.hoisted(() => ({
@@ -311,20 +310,27 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
-	it("stores OpenCode Go GLM-5.2 reasoning-effort-only metadata", () => {
+	// Upstream owns the OpenCode Go GLM-5.2 thinking-level solution (#5967):
+	// only high/xhigh are supported; off/minimal/low/medium are null. The payload
+	// stays reasoning_effort-only because the default openai-completions
+	// thinkingFormat "openai" sends no `thinking` object, so no explicit compat
+	// block is needed. The fork's only retained GLM-5.2 concern is clear_thinking
+	// (zai/openrouter), covered in openai-completions-zai-thinking.test.ts.
+	it("stores OpenCode Go GLM-5.2 thinking-level metadata (upstream #5967)", () => {
 		const model = getModel("opencode-go", "glm-5.2")!;
 
+		// Detected openai-completions compat: supportsDeveloperRole is false from
+		// detection, maxTokensField from the openai-completions default. thinkingFormat
+		// and supportsReasoningEffort are runtime defaults (not stored on the catalog).
 		expect(model.compat).toMatchObject({
-			thinkingFormat: "openai",
-			supportsReasoningEffort: true,
 			supportsDeveloperRole: false,
 			maxTokensField: "max_tokens",
 		});
 		expect(model.thinkingLevelMap).toEqual({
-			off: "none",
+			off: null,
 			minimal: null,
-			low: "high",
-			medium: "high",
+			low: null,
+			medium: null,
 			high: "high",
 			xhigh: "max",
 		});
@@ -396,11 +402,13 @@ describe("openai-completions tool_choice", () => {
 		expect(params.reasoning_effort).toBeUndefined();
 	});
 
-	it("maps OpenCode Go GLM-5.2 thinking levels to reasoning_effort without thinking", async () => {
+	// Upstream's thinkingLevelMap only supports high/xhigh for OpenCode Go GLM-5.2,
+	// so the payload test covers exactly those levels. The default thinkingFormat
+	// "openai" sends reasoning_effort with no `thinking` object (no "cannot specify
+	// both" conflict).
+	it("maps OpenCode Go GLM-5.2 high/xhigh to reasoning_effort without thinking", async () => {
 		const model = getModel("opencode-go", "glm-5.2")!;
 		const cases = [
-			{ reasoning: "low", effort: "high" },
-			{ reasoning: "medium", effort: "high" },
 			{ reasoning: "high", effort: "high" },
 			{ reasoning: "xhigh", effort: "max" },
 		] as const;
@@ -432,34 +440,6 @@ describe("openai-completions tool_choice", () => {
 			expect(params.thinking).toBeUndefined();
 			expect(params.reasoning_effort).toBe(testCase.effort);
 		}
-	});
-
-	it("maps OpenCode Go GLM-5.2 thinking off to reasoning_effort none", async () => {
-		const model = getModel("opencode-go", "glm-5.2")!;
-		let payload: unknown;
-
-		await streamSimple(
-			model,
-			{
-				messages: [
-					{
-						role: "user",
-						content: "Hi",
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: "test",
-				onPayload: (params: unknown) => {
-					payload = params;
-				},
-			},
-		).result();
-
-		const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
-		expect(params.thinking).toBeUndefined();
-		expect(params.reasoning_effort).toBe("none");
 	});
 
 	it("omits tool_stream for unsupported z.ai models", async () => {
@@ -1095,6 +1075,8 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("stores OpenRouter Kimi K2.6 reasoning replay compat in built-in metadata", () => {
+		// `:free` variant delisted from the OpenRouter API; the generator override
+		// matches any `moonshotai/kimi-k2.6*` variant that is listed.
 		const model = getModel("openrouter", "moonshotai/kimi-k2.6")!;
 		expect(model.compat?.supportsDeveloperRole).toBe(false);
 		expect(model.compat?.requiresReasoningContentOnAssistantMessages).toBe(true);
