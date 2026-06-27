@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -21,6 +22,9 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	AgentToolCall,
+	AgentToolResult,
+	AgentToolUpdateCallback,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
@@ -32,6 +36,7 @@ import {
 	modelsAreEqual,
 	resetApiProviders,
 	streamSimple,
+	validateToolArguments,
 } from "@earendil-works/pi-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -55,6 +60,8 @@ import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
+	type ExecuteToolOptions,
+	type ExecuteToolResult,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	type ExtensionMode,
@@ -242,6 +249,11 @@ interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
 }
+
+type DirectToolExecutionEvent = Extract<
+	AgentEvent,
+	{ type: "tool_execution_start" | "tool_execution_update" | "tool_execution_end" }
+>;
 
 function estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
@@ -684,6 +696,125 @@ export class AgentSession {
 	}
 
 	/**
+	 * Emit direct tool lifecycle events without routing through agent message
+	 * persistence, retry, queue, or compaction handling.
+	 */
+	private async _emitDirectToolExecutionEvent(event: DirectToolExecutionEvent): Promise<void> {
+		// Preserve extension hooks and external subscribers without invoking persistence-oriented agent-event handling.
+		await this._emitExtensionEvent(event);
+		this._emit(event);
+	}
+
+	/** Build the standard direct-tool error result shape. */
+	private _createDirectToolErrorResult(message: string): AgentToolResult<unknown> {
+		return {
+			content: [{ type: "text", text: message }],
+			details: {},
+		};
+	}
+
+	/**
+	 * Execute one already validated direct tool call and normalize thrown failures
+	 * into the same error-result shape used by agent-driven tool execution.
+	 */
+	private async _executeDirectTool(
+		tool: AgentTool,
+		toolCall: AgentToolCall,
+		args: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+	): Promise<{ result: AgentToolResult<unknown>; isError: boolean }> {
+		const updateEvents: Promise<void>[] = [];
+		let acceptingUpdates = true;
+
+		try {
+			const result = await tool.execute(toolCall.id, args as never, signal, (partialResult) => {
+				if (!acceptingUpdates) {
+					return;
+				}
+
+				// Fan out each accepted partial result to the direct caller and the normal lifecycle stream.
+				onUpdate?.(partialResult);
+				updateEvents.push(
+					this._emitDirectToolExecutionEvent({
+						type: "tool_execution_update",
+						toolCallId: toolCall.id,
+						toolName: toolCall.name,
+						args: toolCall.arguments,
+						partialResult,
+					}),
+				);
+			});
+			acceptingUpdates = false;
+			// Wait for all accepted update observers before exposing the final result.
+			await Promise.all(updateEvents);
+			return { result, isError: false };
+		} catch (error) {
+			acceptingUpdates = false;
+			// Preserve already-accepted updates before converting the thrown failure into a tool-shaped error.
+			await Promise.all(updateEvents);
+			return {
+				result: this._createDirectToolErrorResult(error instanceof Error ? error.message : String(error)),
+				isError: true,
+			};
+		} finally {
+			acceptingUpdates = false;
+		}
+	}
+
+	/**
+	 * Apply tool_result handlers, emit the direct tool end event, and return the
+	 * SDK-facing result without creating any conversation message.
+	 */
+	private async _finalizeDirectToolResult(
+		toolName: string,
+		toolCallId: string,
+		input: Record<string, unknown>,
+		result: AgentToolResult<unknown>,
+		isError: boolean,
+	): Promise<ExecuteToolResult> {
+		let finalResult = result;
+		let finalIsError = isError;
+
+		// Let result handlers apply the same field-level overrides they can apply to agent-driven tool results.
+		const hookResult = await this._extensionRunner.emitToolResult({
+			type: "tool_result",
+			toolName,
+			toolCallId,
+			input,
+			content: finalResult.content,
+			details: finalResult.details,
+			isError: finalIsError,
+		});
+		if (hookResult) {
+			finalResult = {
+				content: hookResult.content ?? finalResult.content,
+				details: hookResult.details ?? finalResult.details,
+				terminate: finalResult.terminate,
+			};
+			finalIsError = hookResult.isError ?? finalIsError;
+		}
+
+		// Emit the settled direct-execution lifecycle event after result hooks have had their final say.
+		await this._emitDirectToolExecutionEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName,
+			result: finalResult,
+			isError: finalIsError,
+		});
+
+		return {
+			toolName,
+			toolCallId,
+			content: finalResult.content,
+			details: finalResult.details,
+			isError: finalIsError,
+			terminate: finalResult.terminate,
+		};
+	}
+
+	/**
 	 * Subscribe to agent events.
 	 * Session persistence is handled internally (saves messages on message_end).
 	 * Multiple listeners can be added. Returns unsubscribe function for this listener.
@@ -801,6 +932,103 @@ export class AgentSession {
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
+	}
+
+	/**
+	 * Execute a registered Pi tool directly by name.
+	 *
+	 * This janbam fork-owned integration API is for controlled hosts and extensions that
+	 * already selected a known registered tool from `getAllTools()`. It preserves
+	 * prepareArguments, schema validation, tool_call blocking, tool_result mutation,
+	 * tool execution lifecycle events, and current extension execution context.
+	 *
+	 * It intentionally does not start an agent turn and does not append a
+	 * tool-result message to the conversation. Unknown tools and validation
+	 * failures throw before execution; blocked or failed executions resolve with
+	 * `isError: true`.
+	 */
+	async executeTool(
+		toolName: string,
+		input: Record<string, unknown>,
+		options: ExecuteToolOptions = {},
+	): Promise<ExecuteToolResult> {
+		// Resolve executable tool state first so unknown names fail before any lifecycle side effects.
+		const tool = this._toolRegistry.get(toolName);
+		if (!tool) {
+			throw new Error(`Registered tool "${toolName}" not found`);
+		}
+
+		// Require definition metadata because direct callers discover and reason about tools through getAllTools().
+		const definitionEntry = this._toolDefinitions.get(toolName);
+		if (!definitionEntry) {
+			throw new Error(`Registered tool "${toolName}" has no tool definition metadata`);
+		}
+
+		// Establish the synthetic tool call identity used by lifecycle events, hooks, and nested tool executions.
+		const toolCallId = options.toolCallId ?? randomUUID();
+		const signal = options.signal ?? this.agent.signal;
+		let toolCall: AgentToolCall = {
+			type: "toolCall",
+			id: toolCallId,
+			name: toolName,
+			arguments: input,
+		};
+
+		// Normalize direct input through the same compatibility shim used by model-requested calls.
+		if (tool.prepareArguments) {
+			const preparedArguments = tool.prepareArguments(toolCall.arguments);
+			toolCall = {
+				...toolCall,
+				arguments: preparedArguments as AgentToolCall["arguments"],
+			};
+		}
+		// Validate after preparation so direct execution accepts the same legacy/coerced input shape as agent calls.
+		const validatedArgs = validateToolArguments(tool, toolCall);
+		const executionInput = validatedArgs as Record<string, unknown>;
+
+		// Start lifecycle emission only after pre-execution lookup, preparation, and schema validation have succeeded.
+		await this._emitDirectToolExecutionEvent({
+			type: "tool_execution_start",
+			toolCallId,
+			toolName,
+			args: toolCall.arguments,
+		});
+
+		// Give extension policy hooks the same mutable input object agent-driven calls receive.
+		try {
+			const beforeResult = await this._extensionRunner.emitToolCall({
+				type: "tool_call",
+				toolName,
+				toolCallId,
+				input: executionInput,
+			});
+			if (beforeResult?.block) {
+				// Encode policy blocks as tool-shaped failures so the caller can display or store the result.
+				const result = this._createDirectToolErrorResult(beforeResult.reason || "Tool execution was blocked");
+				return await this._finalizeDirectToolResult(toolName, toolCallId, executionInput, result, true);
+			}
+		} catch (error) {
+			// Treat hook failures like execution failures: visible to direct callers, but still finalized consistently.
+			const result = this._createDirectToolErrorResult(error instanceof Error ? error.message : String(error));
+			return await this._finalizeDirectToolResult(toolName, toolCallId, executionInput, result, true);
+		}
+
+		if (signal?.aborted) {
+			// Respect cancellation after hooks in case policy work consumed enough time for the signal to flip.
+			const result = this._createDirectToolErrorResult("Operation aborted");
+			return await this._finalizeDirectToolResult(toolName, toolCallId, executionInput, result, true);
+		}
+
+		// Execute the selected tool while preserving update callbacks and lifecycle update events.
+		const executed = await this._executeDirectTool(tool, toolCall, executionInput, signal, options.onUpdate);
+		// Funnel every successful, thrown, blocked, or aborted outcome through one finalization path.
+		return await this._finalizeDirectToolResult(
+			toolName,
+			toolCallId,
+			executionInput,
+			executed.result,
+			executed.isError,
+		);
 	}
 
 	/**
@@ -2237,6 +2465,7 @@ export class AgentSession {
 						});
 					});
 				},
+				executeTool: (toolName, input, options) => this.executeTool(toolName, input, options),
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);
 				},

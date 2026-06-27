@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added fork-owned direct registered-tool execution APIs: `AgentSession.executeTool()` for SDK hosts and `pi.executeTool()` for extensions. Direct execution preserves tool validation, extension hooks, lifecycle events, and current tool context without starting an agent turn or appending tool-result messages.
+
 ## [0.80.2] - 2026-06-23
 
 ### Changed
