@@ -1551,6 +1551,36 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 // result.stdout, result.stderr, result.code, result.killed
 ```
 
+### pi.executeTool(name, input, options?)
+
+Execute a registered Pi tool directly by name.
+
+This is a janbam fork-owned integration API for controlled extension workflows. It is powerful: registered tools may read, write, execute processes, or mutate external state depending on their implementation. Use `pi.getAllTools()` to inspect tool schemas and source metadata before calling another tool.
+
+```typescript
+const tools = pi.getAllTools();
+const readTool = tools.find((tool) => tool.name === "read");
+if (readTool) {
+  const result = await pi.executeTool("read", { path: "README.md" }, {
+    toolCallId: "my-extension-read",
+    onUpdate: (partial) => {
+      // Optional progress handling.
+    },
+  });
+}
+```
+
+Important behavior:
+
+- Runs `prepareArguments`, schema validation, `tool_call`, `tool_result`, and tool execution lifecycle events.
+- Lets `tool_call` handlers block execution and `tool_result` handlers modify content, details, or error state.
+- Uses the current session cwd and extension runtime context. Nested calls create a fresh context from the same live extension runner; they do not forward the caller tool's exact `ctx` object.
+- Can execute registered tools that are not active for LLM use.
+- Does not emit agent or turn lifecycle events.
+- Does not append a `toolResult` message or start an agent turn.
+
+Unknown tool names and validation failures throw. Blocked calls, aborts, and tool execution failures resolve with `isError: true`.
+
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
 
 Manage active tools. This works for both built-in tools and dynamically registered tools. `pi.getActiveTools()` returns the active tool names as `string[]`; `pi.getAllTools()` returns metadata for all configured tools.

@@ -1253,6 +1253,19 @@ export interface ExtensionAPI {
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
+	/**
+	 * Execute any registered Pi tool by name with explicit input.
+	 *
+	 * This janbam fork-owned integration API preserves tool validation, prepareArguments,
+	 * extension tool_call/tool_result hooks, and tool execution lifecycle events,
+	 * but it does not start an agent turn or append tool-result messages.
+	 */
+	executeTool(
+		toolName: string,
+		input: Record<string, unknown>,
+		options?: ExecuteToolOptions,
+	): Promise<ExecuteToolResult>;
+
 	/** Get the list of currently active tool names. */
 	getActiveTools(): string[];
 
@@ -1459,6 +1472,44 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp" },
 ) => void;
 
+/**
+ * Options for executing a registered tool directly.
+ *
+ * Direct execution is a janbam fork-owned controlled integration surface: it
+ * runs registered Pi tools by name without starting an LLM turn or appending
+ * tool-result messages to the conversation.
+ */
+export interface ExecuteToolOptions {
+	/** Stable id for this direct tool call. Generated when omitted. */
+	toolCallId?: string;
+	/** Abort signal passed to the tool and extension lifecycle hooks. */
+	signal?: AbortSignal;
+	/** Receives partial tool results in addition to normal tool_execution_update events. */
+	onUpdate?: AgentToolUpdateCallback<unknown>;
+}
+
+/** Structured result returned by a direct registered-tool execution. */
+export interface ExecuteToolResult {
+	/** Name of the registered tool that was executed. */
+	toolName: string;
+	/** Tool call id used for lifecycle events and tool execution. */
+	toolCallId: string;
+	/** Final content returned by the tool after tool_result handlers run. */
+	content: (TextContent | ImageContent)[];
+	/** Final details returned by the tool after tool_result handlers run. */
+	details: unknown;
+	/** True when execution was blocked, aborted, threw, or a hook marked the result as an error. */
+	isError: boolean;
+	/** Tool-requested early termination hint, preserved for callers that care about it. */
+	terminate?: boolean;
+}
+
+export type ExecuteToolHandler = (
+	toolName: string,
+	input: Record<string, unknown>,
+	options?: ExecuteToolOptions,
+) => Promise<ExecuteToolResult>;
+
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
 export type SetSessionNameHandler = (name: string) => void;
@@ -1517,6 +1568,7 @@ export interface ExtensionRuntimeState {
 export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
+	executeTool: ExecuteToolHandler;
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;

@@ -59,6 +59,13 @@ describe("ExtensionRunner", () => {
 	const extensionActions: ExtensionActions = {
 		sendMessage: () => {},
 		sendUserMessage: () => {},
+		executeTool: async () => ({
+			toolName: "test",
+			toolCallId: "test",
+			content: [],
+			details: {},
+			isError: false,
+		}),
 		appendEntry: () => {},
 		setSessionName: () => {},
 		getSessionName: () => undefined,

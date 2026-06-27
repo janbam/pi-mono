@@ -83,6 +83,9 @@ interface AgentSession {
   // Subscribe to events (returns unsubscribe function)
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
 
+  // Execute a known registered tool without starting an agent turn
+  executeTool(toolName: string, input: Record<string, unknown>, options?: ExecuteToolOptions): Promise<ExecuteToolResult>;
+
   // Session info
   sessionFile: string | undefined;
   sessionId: string;
@@ -116,6 +119,39 @@ interface AgentSession {
 ```
 
 Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
+
+### Direct Tool Execution
+
+`AgentSession.executeTool()` is a janbam fork-owned integration API for controlled hosts that need to call a known registered Pi tool from deterministic code.
+
+Use `session.getAllTools()` to discover tool names, schemas, prompt guidelines, and `sourceInfo`, then pass explicit input to `executeTool()`:
+
+```typescript
+const tool = session.getAllTools().find((candidate) => candidate.name === "read");
+if (!tool) {
+  throw new Error("read tool is not registered");
+}
+
+const result = await session.executeTool("read", { path: "README.md" }, {
+  toolCallId: "eval-read-1",
+  onUpdate: (partial) => {
+    // Optional: observe streaming tool progress.
+  },
+});
+```
+
+Important behavior:
+
+- Executes any registered tool by name, even when that tool is not currently active for LLM use.
+- Runs the tool's `prepareArguments` hook before schema validation.
+- Validates input against the registered tool schema before execution.
+- Emits `tool_execution_start`, `tool_execution_update`, and `tool_execution_end`.
+- Runs extension `tool_call` handlers, which may block execution.
+- Runs extension `tool_result` handlers, which may replace returned content, details, or error state.
+- Does not emit `agent_start`, `turn_start`, `turn_end`, or `agent_end`.
+- Does not append a `toolResult` message to the conversation or start an agent turn.
+
+Unknown tool names and validation failures throw. Tool execution failures, aborts, and blocked calls resolve with `isError: true` so callers can decide how to surface the result.
 
 ### createAgentSessionRuntime() and AgentSessionRuntime
 
