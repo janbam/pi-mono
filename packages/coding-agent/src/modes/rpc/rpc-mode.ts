@@ -19,6 +19,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import { noOpExtensionUIContext } from "../../core/extensions/index.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -308,6 +309,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// Tool expansion not supported in RPC mode - no TUI
 		},
 	});
+
+	/**
+	 * Execute a registered tool with print-mode UI semantics for the duration of the call.
+	 *
+	 * Janbam fork-owned direct tool RPC calls are automation plumbing. Dialogs resolve
+	 * as cancelled/default inside Pi, and clients never have to answer UI requests just
+	 * to execute a tool from an eval runner.
+	 */
+	const executeToolIgnoringUIRequests = async (
+		toolName: string,
+		input: Record<string, unknown>,
+		toolCallId?: string,
+	) => {
+		return session.extensionRunner.withUIContext(noOpExtensionUIContext, false, async () => {
+			// Use the existing direct execution path so no prompt or tool-result message enters context.
+			return await session.executeTool(toolName, input, { toolCallId });
+		});
+	};
 
 	runtimeHost.setRebindSession(async () => {
 		await rebindSession();
@@ -663,6 +682,22 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 
 				return success(id, "get_commands", { commands });
+			}
+
+			// =================================================================
+			// Registered tools (janbam fork-owned direct execution surface)
+			// =================================================================
+
+			case "get_all_tools": {
+				// Expose the same configured tool metadata that extensions use for direct execution.
+				return success(id, "get_all_tools", { tools: session.getAllTools() });
+			}
+
+			case "execute_tool": {
+				// Run tools through AgentSession.executeTool so validation, hooks, lifecycle events,
+				// and the no-conversation-message contract stay identical to extension direct execution.
+				const result = await executeToolIgnoringUIRequests(command.toolName, command.input, command.toolCallId);
+				return success(id, "execute_tool", result);
 			}
 
 			default: {

@@ -10,6 +10,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ExecuteToolResult, ToolInfo } from "../../core/extensions/index.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
@@ -417,6 +418,32 @@ export class RpcClient {
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		const response = await this.send({ type: "get_commands" });
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
+	}
+
+	/**
+	 * Get all configured registered tools.
+	 *
+	 * This janbam fork-owned RPC surface mirrors `AgentSession.getAllTools()` and
+	 * is intended for controlled hosts that need to discover direct tool inputs.
+	 */
+	async getAllTools(): Promise<ToolInfo[]> {
+		const response = await this.send({ type: "get_all_tools" });
+		return this.getData<{ tools: ToolInfo[] }>(response).tools;
+	}
+
+	/**
+	 * Execute a registered Pi tool directly without adding the command or result to context.
+	 *
+	 * UI requests made during this janbam fork-owned RPC call are ignored by the
+	 * agent process; clients should rely on returned results and lifecycle events.
+	 */
+	async executeTool(
+		toolName: string,
+		input: Record<string, unknown>,
+		options: { toolCallId?: string } = {},
+	): Promise<ExecuteToolResult> {
+		const response = await this.send({ type: "execute_tool", toolName, input, toolCallId: options.toolCallId });
+		return this.getData(response);
 	}
 
 	// =========================================================================

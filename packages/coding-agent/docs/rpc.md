@@ -741,6 +741,114 @@ Each command has:
 
 **Note**: Built-in TUI commands (`/settings`, `/hotkeys`, etc.) are not included. They are handled only in interactive mode and would not execute if sent via `prompt`.
 
+### Registered Tools
+
+The registered-tool RPC commands are janbam fork-owned integration APIs. They exist for controlled hosts such as `pi-eval` that need to discover and execute Pi tools from evaluated scripts without starting an agent turn.
+
+These commands are deliberately not prompt commands:
+- The RPC command itself is not added to conversation context.
+- The returned tool result is not appended as a `toolResult` message.
+- Execution still uses Pi's public direct tool lifecycle: argument preparation, schema validation, `tool_call` hooks, `tool_result` hooks, and `tool_execution_*` events.
+- Direct execution can call registered tools that are not currently active for LLM use.
+
+Pi handles UI requests made while handling `execute_tool` internally with the same no-UI semantics used by print mode. Clients do not need to answer or cancel `extension_ui_request` records for direct tool execution. Dialog methods resolve as cancelled/default values (`select`, `input`, and `editor` return `undefined`; `confirm` returns `false`), and fire-and-forget methods such as `notify`, `setStatus`, and `setTitle` are dropped. This keeps unattended eval runners noninteractive while leaving normal RPC prompt and extension-command UI bridging unchanged.
+
+#### get_all_tools
+
+Get all configured registered tools. This mirrors `AgentSession.getAllTools()` and extension `pi.getAllTools()`.
+
+```json
+{"type": "get_all_tools"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "get_all_tools",
+  "success": true,
+  "data": {
+    "tools": [
+      {
+        "name": "read",
+        "description": "Read a file from disk",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        "promptGuidelines": ["Use when you need file contents."],
+        "sourceInfo": {"source": "builtin", "scope": "package"}
+      }
+    ]
+  }
+}
+```
+
+Each tool entry contains:
+- `name`: Registered tool name to pass to `execute_tool`
+- `description`: Human-readable tool description
+- `parameters`: Tool input schema
+- `promptGuidelines`: Optional model-facing guidance for when to use the tool
+- `sourceInfo`: Metadata describing where the tool came from
+
+#### execute_tool
+
+Execute a registered Pi tool directly by name. This mirrors `AgentSession.executeTool()` and extension `pi.executeTool()`.
+
+```json
+{
+  "type": "execute_tool",
+  "toolName": "read",
+  "input": {"path": "README.md"},
+  "toolCallId": "eval-read-1"
+}
+```
+
+`toolCallId` is optional. If omitted, Pi generates one. Pass a stable `toolCallId` when the client needs to correlate streamed lifecycle events with the request.
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "execute_tool",
+  "success": true,
+  "data": {
+    "toolName": "read",
+    "toolCallId": "eval-read-1",
+    "content": [{"type": "text", "text": "# Project\n..."}],
+    "details": {},
+    "isError": false
+  }
+}
+```
+
+Unknown tool names and schema validation failures return `success: false` because execution never started:
+
+```json
+{
+  "type": "response",
+  "command": "execute_tool",
+  "success": false,
+  "error": "Registered tool \"missing\" not found"
+}
+```
+
+Blocked calls, aborts, hook failures, and tool execution failures return `success: true` with `data.isError: true`, matching Pi's direct tool execution contract:
+
+```json
+{
+  "type": "response",
+  "command": "execute_tool",
+  "success": true,
+  "data": {
+    "toolName": "dangerous_tool",
+    "toolCallId": "eval-tool-2",
+    "content": [{"type": "text", "text": "blocked by policy"}],
+    "details": {},
+    "isError": true
+  }
+}
+```
+
+During execution, clients may receive `tool_execution_start`, `tool_execution_update`, and `tool_execution_end` events before the final `response`. Use `toolCallId`, not the RPC request `id`, to correlate those events.
+
 ## Events
 
 Events are streamed to stdout as JSON lines during agent operation. Events do NOT include an `id` field (only responses do).
