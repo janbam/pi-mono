@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
@@ -226,7 +227,13 @@ export async function emitProjectTrustEvent(
 	return { errors };
 }
 
-const noOpUIContext: ExtensionUIContext = {
+/**
+ * Shared no-UI implementation used by print mode and direct automation surfaces.
+ *
+ * Dialog calls resolve to cancelled/default values, mutation calls disappear, and
+ * `hasUI` stays false when this exact object is the active session UI context.
+ */
+export const noOpExtensionUIContext: ExtensionUIContext = {
 	select: async () => undefined,
 	confirm: async () => false,
 	input: async () => undefined,
@@ -263,6 +270,8 @@ export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
 	private uiContext: ExtensionUIContext;
+	/** Async-scoped UI override for operations that need different UI policy without mutating the session binding. */
+	private uiContextOverride = new AsyncLocalStorage<{ uiContext: ExtensionUIContext; hasUI: boolean }>();
 	private mode: ExtensionMode = "print";
 	private cwd: string;
 	private sessionManager: SessionManager;
@@ -298,7 +307,7 @@ export class ExtensionRunner {
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
-		this.uiContext = noOpUIContext;
+		this.uiContext = noOpExtensionUIContext;
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
@@ -399,16 +408,31 @@ export class ExtensionRunner {
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
-		this.uiContext = uiContext ?? noOpUIContext;
+		this.uiContext = uiContext ?? noOpExtensionUIContext;
 		this.mode = mode;
 	}
 
 	getUIContext(): ExtensionUIContext {
-		return this.uiContext;
+		return this.uiContextOverride.getStore()?.uiContext ?? this.uiContext;
 	}
 
 	hasUI(): boolean {
-		return this.uiContext !== noOpUIContext;
+		const override = this.uiContextOverride.getStore();
+		if (override) {
+			return override.hasUI;
+		}
+		return this.uiContext !== noOpExtensionUIContext;
+	}
+
+	/**
+	 * Run one async operation with an extension UI override scoped to its async call tree.
+	 *
+	 * RPC direct tool execution uses this janbam fork-owned hook to ignore UI requests
+	 * without mutating the session-wide RPC UI bridge that other overlapping commands use.
+	 */
+	withUIContext<T>(uiContext: ExtensionUIContext, hasUI: boolean, run: () => Promise<T>): Promise<T> {
+		// AsyncLocalStorage keeps this override attached to tool execution, hooks, and nested awaits.
+		return this.uiContextOverride.run({ uiContext, hasUI }, run);
 	}
 
 	getExtensionPaths(): string[] {
@@ -621,7 +645,7 @@ export class ExtensionRunner {
 		return {
 			get ui() {
 				runner.assertActive();
-				return runner.uiContext;
+				return runner.getUIContext();
 			},
 			get mode() {
 				runner.assertActive();
