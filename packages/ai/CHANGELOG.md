@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed Z.AI GLM-5.1/GLM-5.2 and OpenRouter `z-ai/glm-5.2` thinking requests to set `thinking.clear_thinking: false` so prior reasoning context is preserved.
-
 ## [0.80.10] - 2026-07-16
 
 ### Fixed

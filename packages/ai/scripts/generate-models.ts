@@ -1483,12 +1483,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat = { ...(compat ?? {}), thinkingFormat: "deepseek", supportsReasoningEffort: false };
 				}
 
-				// Upstream owns the OpenCode Go GLM-5.2 thinking-level solution
-				// (applyThinkingLevelMetadata + OPENCODE_GO_GLM52_THINKING_LEVEL_MAP,
-				// upstream #5967). The payload stays reasoning_effort-only via the
-				// default openai-completions thinkingFormat "openai", which sends no
-				// `thinking` object, so the fork's explicit compat block is redundant.
-
 				// Fix known mismatches between models.dev npm data and actual
 				// OpenCode Go endpoint behaviour. models.dev reports these models
 				// as @ai-sdk/anthropic, but the OpenCode Go endpoints either don't
@@ -1506,14 +1500,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						baseUrl = `${variant.basePath}/v1`;
 						// Qwen/DashScope uses enable_thinking at the top level.
 						compat = { ...(compat ?? {}), thinkingFormat: "qwen" };
-					}
-					// models.dev now classifies grok-4.5 as @ai-sdk/openai, but the
-					// opencode-go provider only registers the openai-completions and
-					// anthropic-messages APIs, so force the OpenAI-compatible chat path.
-					if (modelId === "grok-4.5") {
-						api = "openai-completions";
-						baseUrl = `${variant.basePath}/v1`;
-						compat = { ...(compat ?? {}), maxTokensField: "max_tokens" };
 					}
 				}
 
