@@ -5,9 +5,16 @@ import type { Api, Model } from "../src/types.ts";
 const EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS = [
 	"anthropic/claude-fable-5",
 	"anthropic/claude-opus-4-8",
+	"anthropic/claude-sonnet-5",
 	"cloudflare-ai-gateway/claude-fable-5",
+	"kimi-coding/k2p7",
+	"kimi-coding/k3",
+	"kimi-coding/kimi-for-coding",
+	"kimi-coding/kimi-for-coding-highspeed",
+	"kimi-coding/kimi-k2-thinking",
 	"opencode/claude-opus-4-8",
 	"vercel-ai-gateway/anthropic/claude-opus-4.8",
+	"vercel-ai-gateway/anthropic/claude-sonnet-5",
 ];
 
 function getAllModels(): Model<Api>[] {
@@ -24,7 +31,9 @@ describe("Anthropic adaptive thinking model metadata", () => {
 
 		expect(flaggedModels).toEqual(expect.arrayContaining([...EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS].sort()));
 		expect(flaggedModels).toEqual(
-			flaggedModels.filter((modelId) => /(opus[-.]4[-.][678]|sonnet[-.]4[-.]6|fable[-.]5)/.test(modelId)),
+			flaggedModels.filter((modelId) =>
+				/(opus[-.]4[-.][678]|sonnet[-.]4[-.]6|sonnet[-.]5|fable[-.]5|kimi-coding\/)/.test(modelId),
+			),
 		);
 	});
 });

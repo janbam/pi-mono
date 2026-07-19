@@ -22,6 +22,7 @@ export { ExtensionRunner, noOpExtensionUIContext } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
+	AgentSettledEvent,
 	AgentStartEvent,
 	// Re-exports
 	AgentToolResult,
@@ -35,6 +36,7 @@ export type {
 	BashToolResultEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BuildSystemPromptOptions,
@@ -50,6 +52,9 @@ export type {
 	EditorFactory,
 	EditToolCallEvent,
 	EditToolResultEvent,
+	// Message and Entry Rendering
+	EntryRenderer,
+	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
 	ExecuteToolHandler,
@@ -84,6 +89,7 @@ export type {
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
+	InlineExtension,
 	// Events - Input
 	InputEvent,
 	InputEventResult,
@@ -94,7 +100,6 @@ export type {
 	LsToolResultEvent,
 	// Events - Message
 	MessageEndEvent,
-	// Message Rendering
 	MessageRenderer,
 	MessageRenderOptions,
 	MessageStartEvent,
@@ -131,6 +136,7 @@ export type {
 	SessionBeforeTreeResult,
 	SessionCompactEvent,
 	SessionEvent,
+	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,
