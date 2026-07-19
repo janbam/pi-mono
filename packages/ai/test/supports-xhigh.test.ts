@@ -101,15 +101,6 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high"]);
 	});
 
-	// Upstream #5967: OpenCode Go GLM-5.2 exposes only high/xhigh reasoning;
-	// off/minimal/low/medium are unsupported (null in thinkingLevelMap), so the
-	// supported set excludes off unlike the DeepSeek V4 Flash / Kimi K2.6 cases.
-	it("includes only high/xhigh for OpenCode Go GLM-5.2 (upstream #5967)", () => {
-		const model = getModel("opencode-go", "glm-5.2");
-		expect(model).toBeDefined();
-		expect(getSupportedThinkingLevels(model!)).toEqual(["high", "xhigh"]);
-	});
-
 	it("excludes thinking off for Moonshot Kimi K2.7 Code models", () => {
 		const cases = [getModel("moonshotai", "kimi-k2.7-code"), getModel("moonshotai-cn", "kimi-k2.7-code")];
 

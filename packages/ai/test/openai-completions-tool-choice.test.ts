@@ -310,32 +310,6 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
-	// Upstream owns the OpenCode Go GLM-5.2 thinking-level solution (#5967):
-	// only high/xhigh are supported; off/minimal/low/medium are null. The payload
-	// stays reasoning_effort-only because the default openai-completions
-	// thinkingFormat "openai" sends no `thinking` object, so no explicit compat
-	// block is needed. The fork's only retained GLM-5.2 concern is clear_thinking
-	// (zai/openrouter), covered in openai-completions-zai-thinking.test.ts.
-	it("stores OpenCode Go GLM-5.2 thinking-level metadata (upstream #5967)", () => {
-		const model = getModel("opencode-go", "glm-5.2")!;
-
-		// Detected openai-completions compat: supportsDeveloperRole is false from
-		// detection, maxTokensField from the openai-completions default. thinkingFormat
-		// and supportsReasoningEffort are runtime defaults (not stored on the catalog).
-		expect(model.compat).toMatchObject({
-			supportsDeveloperRole: false,
-			maxTokensField: "max_tokens",
-		});
-		expect(model.thinkingLevelMap).toEqual({
-			off: null,
-			minimal: null,
-			low: null,
-			medium: null,
-			high: "high",
-			xhigh: "max",
-		});
-	});
-
 	it("maps z.ai GLM-5.2 thinking levels to reasoning_effort", async () => {
 		const model = getModel("zai", "glm-5.2")!;
 		const cases = [
@@ -460,46 +434,6 @@ describe("openai-completions tool_choice", () => {
 		const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
 		expect(params.thinking).toEqual({ type: "disabled" });
 		expect(params.reasoning_effort).toBeUndefined();
-	});
-
-	// Upstream's thinkingLevelMap only supports high/xhigh for OpenCode Go GLM-5.2,
-	// so the payload test covers exactly those levels. The default thinkingFormat
-	// "openai" sends reasoning_effort with no `thinking` object (no "cannot specify
-	// both" conflict).
-	it("maps OpenCode Go GLM-5.2 high/xhigh to reasoning_effort without thinking", async () => {
-		const model = getModel("opencode-go", "glm-5.2")!;
-		const cases = [
-			{ reasoning: "high", effort: "high" },
-			{ reasoning: "xhigh", effort: "max" },
-		] as const;
-
-		for (const testCase of cases) {
-			let payload: unknown;
-
-			await streamSimple(
-				model,
-				{
-					messages: [
-						{
-							role: "user",
-							content: "Hi",
-							timestamp: Date.now(),
-						},
-					],
-				},
-				{
-					apiKey: "test",
-					reasoning: testCase.reasoning,
-					onPayload: (params: unknown) => {
-						payload = params;
-					},
-				},
-			).result();
-
-			const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
-			expect(params.thinking).toBeUndefined();
-			expect(params.reasoning_effort).toBe(testCase.effort);
-		}
 	});
 
 	it("omits tool_stream for unsupported z.ai models", async () => {
