@@ -118,7 +118,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+    // JANBAM fork mod
+	let prompt = `You are the top senior software engineer.`
 
 Available tools:
 ${toolsList}
