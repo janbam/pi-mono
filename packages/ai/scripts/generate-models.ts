@@ -1880,6 +1880,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						// Qwen/DashScope uses enable_thinking at the top level.
 						compat = { ...(compat ?? {}), thinkingFormat: "qwen" };
 					}
+					if (modelId.startsWith("glm-")) {
+						// JANBAM fork mod: OpenCode Go GLM endpoints mirror the z-ai request shape:
+						// a `thinking` object (type + clear_thinking) with an
+						// optional top-level reasoning_effort.
+						compat = { ...(compat ?? {}), thinkingFormat: "zai", supportsReasoningEffort: true };
+					}
 				}
 
 				if (api === "openai-completions") {
