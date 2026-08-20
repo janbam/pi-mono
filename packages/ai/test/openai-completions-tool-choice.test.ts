@@ -347,6 +347,43 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
+	// JANBAM fork mod: OpenCode Go GLM models emit the z-ai thinking shape.
+	it("maps OpenCode Go GLM thinking to the z-ai request shape", async () => {
+		const model = getModel("opencode-go", "glm-5.2")!;
+		const cases = [
+			{ reasoning: "high", effort: "high" },
+			{ reasoning: "max", effort: "max" },
+		] as const;
+
+		for (const testCase of cases) {
+			let payload: unknown;
+
+			await streamSimple(
+				model,
+				{
+					messages: [
+						{
+							role: "user",
+							content: "Hi",
+							timestamp: Date.now(),
+						},
+					],
+				},
+				{
+					apiKey: "test",
+					reasoning: testCase.reasoning,
+					onPayload: (params: unknown) => {
+						payload = params;
+					},
+				},
+			).result();
+
+			const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
+			expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
+			expect(params.reasoning_effort).toBe(testCase.effort);
+		}
+	});
+
 	it("preserves z.ai thinking when replaying reasoning_content", async () => {
 		const model = getModel("zai", "glm-5.2")!;
 		const assistantMessage: AssistantMessage = {
