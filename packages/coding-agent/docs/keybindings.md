@@ -120,7 +120,9 @@ This routing remains configurable through the ordinary action bindings. For exam
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.interrupt` | `escape` | Cancel / abort |
+| `app.interrupt` | `ctrl+escape`, `ctrl+\\` | Abort now: interrupt the stream and running tools |
+| `app.turn.pause` | `escape` | Pause after current tool calls finish (while streaming) |
+| `app.turn.resume` | `escape` | Continue a paused turn without a new message |
 | `app.clear` | `ctrl+c` | Clear editor (first) / exit (second) |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (none on Windows) | Suspend to background |

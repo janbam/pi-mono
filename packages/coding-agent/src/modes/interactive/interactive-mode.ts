@@ -489,6 +489,9 @@ export class InteractiveMode {
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
 
+	// Messages submitted while a run drains toward its pause boundary
+	private pausePendingMessages: string[] = [];
+
 	// Shutdown state
 	private shutdownRequested = false;
 
@@ -2790,7 +2793,14 @@ export class InteractiveMode {
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
 			if (this.session.isStreaming) {
-				this.restoreQueuedMessagesToEditor({ abort: true });
+				// First press arms the pause and hands queued text back; second press cancels it.
+				if (!this.session.isPauseRequested) {
+					this.restoreQueuedMessagesToEditor();
+				}
+				this.session.requestPause();
+				this.updateEditorBorderColor();
+			} else if (this.session.isPaused) {
+				void this.resumePausedTurn();
 			} else if (this.session.isBashRunning) {
 				this.session.abortBash();
 			} else if (this.isBashMode) {
@@ -2813,6 +2823,19 @@ export class InteractiveMode {
 						this.lastEscapeTime = now;
 					}
 				}
+			}
+		};
+
+		// Hard interrupt keeps the pre-pause escape behavior: kill stream and tools now.
+		this.defaultEditor.onInterrupt = () => {
+			if (this.session.isStreaming) {
+				this.restoreQueuedMessagesToEditor({ abort: true });
+			} else if (this.session.isBashRunning) {
+				this.session.abortBash();
+			} else if (this.session.isPaused) {
+				// Discard the resumable hold; nothing is running, so this just clears paused state.
+				// No settle event fires for an idle session, so restore the border color here.
+				void this.session.abort().then(() => this.updateEditorBorderColor());
 			}
 		};
 
@@ -3067,7 +3090,14 @@ export class InteractiveMode {
 			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
+				if (this.session.isPauseRequested) {
+					// The run is draining toward its pause boundary, where queued steering messages
+					// would never be delivered. Park the text until the pause lands, then send it.
+					this.pausePendingMessages.push(text);
+					this.showStatus("Message queued for when the pause lands");
+				} else {
+					await this.session.prompt(text, { streamingBehavior: "steer" });
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -3105,6 +3135,8 @@ export class InteractiveMode {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
+				// A starting run supersedes any scheduled-pause visual state.
+				this.updateEditorBorderColor();
 				// Restore main escape handler if retry handler is still active
 				// (retry success event fires later, but we need main handler now)
 				if (this.retryEscapeHandler) {
@@ -3310,6 +3342,7 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled":
+				await this.handlePauseSettled();
 				await this.checkShutdownRequested();
 				break;
 
@@ -4009,7 +4042,13 @@ export class InteractiveMode {
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			if (this.session.isPauseRequested) {
+				// Same drain-window rule as Enter: park until the pause lands.
+				this.pausePendingMessages.push(text);
+				this.showStatus("Message queued for when the pause lands");
+			} else {
+				await this.session.prompt(text, { streamingBehavior: "followUp" });
+			}
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -4032,6 +4071,9 @@ export class InteractiveMode {
 	private updateEditorBorderColor(): void {
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
+		} else if (this.session.isPauseRequested || this.session.isPaused) {
+			// Red editor while a pause is scheduled or held: submitted text will steer the held run.
+			this.editor.borderColor = (str: string) => theme.fg("error", str);
 		} else {
 			const level = this.session.thinkingLevel || "off";
 			this.editor.borderColor = theme.getThinkingBorderColor(level);
@@ -4203,6 +4245,7 @@ export class InteractiveMode {
 		return {
 			steering: [
 				...this.session.getSteeringMessages(),
+				...this.pausePendingMessages,
 				...this.compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
 			],
 			followUp: [
@@ -4218,6 +4261,8 @@ export class InteractiveMode {
 	 */
 	private clearAllQueues(): { steering: string[]; followUp: string[] } {
 		const { steering, followUp } = this.session.clearQueue();
+		const parkedMessages = this.pausePendingMessages;
+		this.pausePendingMessages = [];
 		const compactionSteering = this.compactionQueuedMessages
 			.filter((msg) => msg.mode === "steer")
 			.map((msg) => msg.text);
@@ -4226,9 +4271,53 @@ export class InteractiveMode {
 			.map((msg) => msg.text);
 		this.compactionQueuedMessages = [];
 		return {
-			steering: [...steering, ...compactionSteering],
+			steering: [...steering, ...parkedMessages, ...compactionSteering],
 			followUp: [...followUp, ...compactionFollowUp],
 		};
+	}
+
+	/** Continue a held run without injecting a message. */
+	private async resumePausedTurn(): Promise<void> {
+		try {
+			await this.session.resumePaused();
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/**
+	 * React to a run settling: flush messages parked during the drain window as
+	 * continuation prompts, or surface the paused state when nothing was parked.
+	 */
+	private async handlePauseSettled(): Promise<void> {
+		const parked = this.pausePendingMessages;
+		this.pausePendingMessages = [];
+		if (parked.length > 0) {
+			for (const text of parked) {
+				if (!this.session.isIdle) {
+					// A flushed prompt already started a new run; keep the rest for its settle.
+					this.pausePendingMessages.unshift(text);
+					break;
+				}
+				try {
+					await this.session.prompt(text);
+				} catch (error) {
+					this.showError(
+						`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					break;
+				}
+			}
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+			return;
+		}
+		if (this.session.isPaused) {
+			const resumeKey = this.getAppKeyDisplay("app.turn.resume");
+			this.showStatus(`Paused before the next model request - type a message or press ${resumeKey} to continue`);
+		}
+		// Red border reflects scheduled or held pause state after every settle.
+		this.updateEditorBorderColor();
 	}
 
 	private updatePendingMessagesDisplay(): void {

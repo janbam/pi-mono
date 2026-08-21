@@ -209,7 +209,8 @@ See `/hotkeys` for the full list. Customize via `~/.pi/agent/keybindings.json`. 
 |-----|--------|
 | Ctrl+C | Clear editor |
 | Ctrl+C twice | Quit |
-| Escape | Cancel/abort |
+| Escape | Pause after current tool calls finish; again while paused: continue |
+| Ctrl+Escape or Ctrl+\\ | Abort now (interrupt stream and tools) |
 | Escape twice | Open `/tree` |
 | Ctrl+L | Open model selector |
 | Ctrl+P / Shift+Ctrl+P | Cycle scoped models forward/backward |
@@ -224,7 +225,8 @@ Submit messages while the agent is working:
 
 - **Enter** queues a *steering* message, delivered after the current assistant turn finishes executing its tool calls
 - **Alt+Enter** queues a *follow-up* message, delivered only after the agent finishes all work
-- **Escape** aborts and restores queued messages to editor
+- **Escape** pauses the turn at the next boundary: running tools finish, but the next model request is held. Type a message and it becomes the continuation; press Escape again to continue without one. Pressing Escape twice before the pause lands cancels it. Queued messages are restored to the editor.
+- **Ctrl+Escape** aborts hard, interrupting the stream and running tools
 - **Alt+Up** retrieves queued messages back to editor
 
 On Windows Terminal, `Alt+Enter` is fullscreen by default. Remap it in [docs/terminal-setup.md](docs/terminal-setup.md) so pi can receive the follow-up shortcut.

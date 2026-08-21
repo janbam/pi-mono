@@ -12,6 +12,8 @@ import { getAgentDir } from "../config.ts";
 
 export interface AppKeybindings {
 	"app.interrupt": true;
+	"app.turn.pause": true;
+	"app.turn.resume": true;
 	"app.clear": true;
 	"app.exit": true;
 	"app.suspend": true;
@@ -63,7 +65,20 @@ declare module "@earendil-works/pi-tui" {
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
-	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
+	"app.interrupt": {
+		// ctrl+escape needs Kitty/modifyOtherKeys support; ctrl+backslash has a
+		// legacy byte (0x1c) and works everywhere.
+		defaultKeys: ["ctrl+escape", "ctrl+\\"],
+		description: "Abort now (interrupt tools and stream)",
+	},
+	"app.turn.pause": {
+		defaultKeys: "escape",
+		description: "Pause after current tool calls finish",
+	},
+	"app.turn.resume": {
+		defaultKeys: "escape",
+		description: "Continue paused turn",
+	},
 	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },
 	"app.suspend": {

@@ -10,6 +10,8 @@ export class CustomEditor extends Editor {
 
 	// Special handlers that can be dynamically replaced
 	public onEscape?: () => void;
+	/** Hard-interrupt handler (app.interrupt, default ctrl+escape). Falls back to onEscape. */
+	public onInterrupt?: () => void;
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
 	/** Handler for extension-registered shortcuts. Returns true if handled. */
@@ -41,11 +43,24 @@ export class CustomEditor extends Editor {
 
 		// Check app keybindings first
 
-		// Escape/interrupt - only if autocomplete is NOT active
+		// Hard interrupt keeps its own handler so it stays distinct from contextual escape behavior.
 		if (this.keybindings.matches(data, "app.interrupt")) {
 			if (!this.isShowingAutocomplete()) {
-				// Use dynamic onEscape if set, otherwise registered handler
-				const handler = this.onEscape ?? this.actionHandlers.get("app.interrupt");
+				const handler = this.onInterrupt ?? this.onEscape ?? this.actionHandlers.get("app.interrupt");
+				if (handler) {
+					handler();
+					return;
+				}
+			}
+			// Let parent handle escape for autocomplete cancellation
+			super.handleInput(data);
+			return;
+		}
+
+		// Pause/resume share the dynamic onEscape handler so hosts implement one contextual behavior.
+		if (this.keybindings.matches(data, "app.turn.pause") || this.keybindings.matches(data, "app.turn.resume")) {
+			if (!this.isShowingAutocomplete()) {
+				const handler = this.onEscape ?? this.actionHandlers.get("app.turn.pause");
 				if (handler) {
 					handler();
 					return;
