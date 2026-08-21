@@ -2643,6 +2643,9 @@ export class InteractiveMode {
 				if (!customEditor.onEscape) {
 					customEditor.onEscape = () => this.defaultEditor.onEscape?.();
 				}
+				if (!customEditor.onInterrupt) {
+					customEditor.onInterrupt = () => this.defaultEditor.onInterrupt?.();
+				}
 				if (!customEditor.onCtrlD) {
 					customEditor.onCtrlD = () => this.defaultEditor.onCtrlD?.();
 				}
@@ -4297,15 +4300,17 @@ export class InteractiveMode {
 		const parked = this.pausePendingMessages;
 		this.pausePendingMessages = [];
 		if (parked.length > 0) {
-			for (const text of parked) {
+			for (let i = 0; i < parked.length; i++) {
 				if (!this.session.isIdle) {
 					// A flushed prompt already started a new run; keep the rest for its settle.
-					this.pausePendingMessages.unshift(text);
+					this.pausePendingMessages.unshift(...parked.slice(i));
 					break;
 				}
 				try {
-					await this.session.prompt(text);
+					await this.session.prompt(parked[i]);
 				} catch (error) {
+					// Keep untried messages recoverable instead of dropping them.
+					this.pausePendingMessages.unshift(...parked.slice(i + 1));
 					this.showError(
 						`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`,
 					);

@@ -219,6 +219,33 @@ describe("AgentSession pause at turn boundary", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
+	it("freezes a retryable error at a landed pause until resumed", async () => {
+		const harness = await createHarness({ tools: [echoTool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("echo", { text: "hello" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("transient failure", { stopReason: "error", errorMessage: "provider overloaded" }),
+			fauxAssistantMessage("recovered"),
+		]);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+
+		// The pause armed during the batch, so the errored round itself still ran;
+		// the hold lands after it and freezes the retry (third request) instead.
+		expect(harness.session.isPaused).toBe(true);
+		expect(harness.getPendingResponseCount()).toBe(2);
+		expect(harness.eventsOfType("auto_retry_start")).toHaveLength(0);
+
+		// Resume settles the frozen retry through the normal post-run pipeline.
+		await harness.session.resumePaused();
+
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(getAssistantTexts(harness)).toContain("recovered");
+		expect(harness.eventsOfType("auto_retry_start").length).toBeGreaterThan(0);
+	});
+
 	it("marks the transcript aborted when a held pause is discarded", async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);

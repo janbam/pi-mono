@@ -1341,9 +1341,19 @@ export class AgentSession {
 	private async _runAgentContinuation(): Promise<void> {
 		this._isAgentRunActive = true;
 		try {
-			await this.agent.continue();
+			// Settle anything the pause froze first (retryable error, compaction).
+			// These paths issue their own continuations, so no bare continuation is
+			// needed afterwards; their final post-run pass runs in the loop below.
+			let settledByPostRun = false;
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
+				settledByPostRun = true;
+			}
+			if (!settledByPostRun) {
+				await this.agent.continue();
+				while (await this._handlePostAgentRun()) {
+					await this.agent.continue();
+				}
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
@@ -1355,10 +1365,18 @@ export class AgentSession {
 
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
-		this._lastAssistantMessage = undefined;
 		if (!msg) {
 			return false;
 		}
+
+		// A landed pause freezes the transcript: no retry, compaction-retry, or
+		// queued-message continuation may issue another LLM request. The message
+		// stays staged so resumePaused()'s post-run pass settles it after resume.
+		if (this._pausedResumable) {
+			return false;
+		}
+
+		this._lastAssistantMessage = undefined;
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
