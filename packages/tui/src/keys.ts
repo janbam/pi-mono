@@ -831,12 +831,22 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 	switch (key) {
 		case "escape":
 		case "esc":
-			if (modifier !== 0) return false;
-			return (
-				data === "\x1b" ||
-				matchesKittySequence(data, CODEPOINTS.escape, 0) ||
-				matchesModifyOtherKeys(data, CODEPOINTS.escape, 0)
-			);
+			if (modifier === 0) {
+				return (
+					data === "\x1b" ||
+					matchesKittySequence(data, CODEPOINTS.escape, 0) ||
+					matchesModifyOtherKeys(data, CODEPOINTS.escape, 0)
+				);
+			}
+			// Ctrl+Escape has no legacy byte encoding; only Kitty CSI-u and
+			// modifyOtherKeys terminals can report it as a distinct key.
+			if (modifier === MODIFIERS.ctrl) {
+				return (
+					matchesKittySequence(data, CODEPOINTS.escape, MODIFIERS.ctrl) ||
+					matchesModifyOtherKeys(data, CODEPOINTS.escape, MODIFIERS.ctrl)
+				);
+			}
+			return false;
 
 		case "space":
 			if (!_kittyProtocolActive) {
