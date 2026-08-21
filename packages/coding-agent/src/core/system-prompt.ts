@@ -2,7 +2,8 @@
  * System prompt construction and project context loading
  */
 
-import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+// JBMOD: pi docs section below is disabled; re-enable these with it
+// import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -66,15 +67,15 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
-		prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
 		return prompt;
 	}
 
-	// Get absolute paths to documentation and examples
-	const readmePath = getReadmePath();
-	const docsPath = getDocsPath();
-	const examplesPath = getExamplesPath();
+	// JBMOD: unused while the pi docs section below is commented out
+	// const readmePath = getReadmePath();
+	// const docsPath = getDocsPath();
+	// const examplesPath = getExamplesPath();
 
 	// Build tools list based on selected tools.
 	// A tool appears in Available tools only when the caller provides a one-line snippet.
@@ -113,13 +114,15 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	}
 
 	// Always include these
-    // JBMOD
-	addGuideline("Be concise in your responses with high-signal content. Avoid any preambles, fluff or hedging. Get straight to the point. Point out ambiguities in user instructions and ask clarifying questions if needed.");
+	// JBMOD
+	addGuideline(
+		"Be concise in your responses with high-signal content. Avoid any preambles, fluff or hedging. Get straight to the point. Point out ambiguities in user instructions and ask clarifying questions if needed.",
+	);
 	addGuideline("Show file paths clearly when working with files");
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-    // JANBAM fork mod
+	// JANBAM fork mod
 
 	let prompt = `You are the top senior software engineer and system architecture designer.
 
@@ -133,8 +136,8 @@ ${guidelines}
 
 `;
 
-//JBMOD    
-/**
+	//JBMOD
+	/**
 Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
 - Additional docs: ${docsPath}
@@ -145,7 +148,7 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
 */
 
-    if (appendSection) {
+	if (appendSection) {
 		prompt += appendSection;
 	}
 
