@@ -2833,9 +2833,11 @@ export class InteractiveMode {
 			} else if (this.session.isBashRunning) {
 				this.session.abortBash();
 			} else if (this.session.isPaused) {
-				// Discard the resumable hold; nothing is running, so this just clears paused state.
-				// No settle event fires for an idle session, so restore the border color here.
-				void this.session.abort().then(() => this.updateEditorBorderColor());
+				// Discard the hold with a persisted "Operation aborted" marker, like a
+				// regular abort leaves behind. Nothing is running, so no settle event
+				// fires and the border color is restored here.
+				this.session.abortPausedTurn();
+				this.updateEditorBorderColor();
 			}
 		};
 

@@ -1878,6 +1878,47 @@ export class AgentSession {
 		await this._runAgentContinuation();
 	}
 
+	/**
+	 * Discard a held pause and mark the transcript like a hard abort would:
+	 * an aborted assistant message is appended to the agent state, persisted
+	 * to the session file, and emitted so listeners render "Operation aborted".
+	 * No-op when nothing is held.
+	 */
+	abortPausedTurn(): void {
+		if (!this._pausedResumable) {
+			return;
+		}
+		this._pausedResumable = false;
+
+		const model = this.model;
+		if (!model) {
+			return;
+		}
+		const abortedMessage: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: Date.now(),
+		};
+		this.agent.state.messages = [...this.agent.state.messages, abortedMessage];
+		this.sessionManager.appendMessage(abortedMessage);
+		// Emit start/end so UI listeners render the aborted marker exactly like
+		// a stream-interrupted assistant message.
+		this._emit({ type: "message_start", message: abortedMessage });
+		this._emit({ type: "message_end", message: abortedMessage });
+	}
+
 	async waitForIdle(): Promise<void> {
 		if (this.isIdle) {
 			return;

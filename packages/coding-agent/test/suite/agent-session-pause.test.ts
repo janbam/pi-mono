@@ -45,6 +45,43 @@ describe("AgentSession pause at turn boundary", () => {
 		}
 	});
 
+	it("executes every parallel tool call of a batch before the pause lands", async () => {
+		const executed: string[] = [];
+		const markTool: AgentTool = {
+			name: "mark",
+			label: "Mark",
+			description: "Record an execution marker",
+			parameters: Type.Object({ n: Type.String() }),
+			execute: async (_toolCallId, params) => {
+				executed.push(typeof params === "object" && params !== null && "n" in params ? String(params.n) : "?");
+				return { content: [{ type: "text", text: "ok" }], details: {} };
+			},
+		};
+		const harness = await createHarness({ tools: [markTool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(
+				[fauxToolCall("mark", { n: "1" }), fauxToolCall("mark", { n: "2" }), fauxToolCall("mark", { n: "3" })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		let armed = false;
+		const disarm = harness.session.subscribe((event: AgentSessionEvent) => {
+			if (event.type === "tool_execution_start" && !armed) {
+				armed = true;
+				harness.session.requestPause();
+			}
+		});
+		await harness.session.prompt("start");
+		disarm();
+
+		expect(executed.sort()).toEqual(["1", "2", "3"]);
+		expect(harness.session.isPaused).toBe(true);
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
 	it("holds the run after tool results and before the next LLM request", async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);
@@ -180,5 +217,34 @@ describe("AgentSession pause at turn boundary", () => {
 
 		expect(harness.session.isPaused).toBe(false);
 		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("marks the transcript aborted when a held pause is discarded", async () => {
+		const harness = await createHarness({ tools: [echoTool] });
+		harnesses.push(harness);
+		scriptToolTurnThenDone(harness);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+		expect(harness.session.isPaused).toBe(true);
+
+		harness.session.abortPausedTurn();
+
+		expect(harness.session.isPaused).toBe(false);
+		const last = harness.session.messages.at(-1);
+		expect(last?.role).toBe("assistant");
+		expect(last && "stopReason" in last ? last.stopReason : undefined).toBe("aborted");
+		// The marker is persisted to the session file.
+		const contextEntries = harness.sessionManager.buildContextEntries();
+		const lastEntry = contextEntries.at(-1);
+		expect(lastEntry?.type).toBe("message");
+		expect(
+			lastEntry?.type === "message" && lastEntry.message.role === "assistant"
+				? lastEntry.message.stopReason
+				: undefined,
+		).toBe("aborted");
+		// The emitted events let the UI render the regular aborted state.
+		expect(harness.eventsOfType("message_end").at(-1)?.message.role).toBe("assistant");
 	});
 });
