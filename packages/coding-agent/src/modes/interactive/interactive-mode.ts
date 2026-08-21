@@ -4072,8 +4072,10 @@ export class InteractiveMode {
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
 		} else if (this.session.isPauseRequested || this.session.isPaused) {
-			// Red editor while a pause is scheduled or held: submitted text will steer the held run.
-			this.editor.borderColor = (str: string) => theme.fg("error", str);
+			// Alarm red, deliberately outside the theme palette: bold + aixterm bright
+			// red (SGR 91) renders at maximum brightness on every terminal; close with
+			// 22/39 so only these attributes are reset and surrounding styling survives.
+			this.editor.borderColor = (str: string) => `\x1b[1;91m${str}\x1b[22;39m`;
 		} else {
 			const level = this.session.thinkingLevel || "off";
 			this.editor.borderColor = theme.getThinkingBorderColor(level);
