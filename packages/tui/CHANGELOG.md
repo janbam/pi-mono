@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `ctrl+escape` key matching via Kitty CSI-u and xterm modifyOtherKeys sequences. Ctrl+Escape has no legacy byte encoding, so it is only reported by terminals with those protocols enabled.
+
 ## [0.84.2] - 2026-08-14
 
 ### Added

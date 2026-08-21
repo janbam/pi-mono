@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added turn pause: Escape while streaming now holds the run at the next turn boundary (current tool calls finish, tool results are persisted, the next LLM request is not sent). While paused, typing a message continues the run with that message injected before the next request, and Escape resumes without injecting anything. Pressing Escape again before the pause lands cancels it; queued steering/follow-up messages are restored to the editor. New keybindings `app.turn.pause` and `app.turn.resume` (both default `escape`).
 - Added fork-owned direct registered-tool execution APIs: `AgentSession.executeTool()` for SDK hosts and `pi.executeTool()` for extensions. Direct execution preserves tool validation, extension hooks, lifecycle events, and current tool context without starting an agent turn or appending tool-result messages.
 - Added janbam fork-owned RPC commands `get_all_tools` and `execute_tool` so controlled hosts can discover and execute registered Pi tools without adding the command or result to conversation context.
 

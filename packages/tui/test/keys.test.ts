@@ -253,6 +253,21 @@ describe("matchesKey", () => {
 			assert.strictEqual(parseKey("\x1b[27;1;27~"), "escape");
 		});
 
+		it("should match xterm modifyOtherKeys Ctrl+Escape", () => {
+			setKittyProtocolActive(false);
+			assert.strictEqual(matchesKey("\x1b[27;5;27~", "ctrl+escape"), true);
+			assert.strictEqual(matchesKey("\x1b", "ctrl+escape"), false);
+			assert.strictEqual(parseKey("\x1b[27;5;27~"), "ctrl+escape");
+		});
+
+		it("should match Kitty CSI-u Ctrl+Escape", () => {
+			setKittyProtocolActive(true);
+			assert.strictEqual(matchesKey("\x1b[27;5u", "ctrl+escape"), true);
+			assert.strictEqual(matchesKey("\x1b[27u", "escape"), true);
+			assert.strictEqual(matchesKey("\x1b[27;5u", "escape"), false);
+			assert.strictEqual(parseKey("\x1b[27;5u"), "ctrl+escape");
+		});
+
 		it("should match xterm modifyOtherKeys Space variants", () => {
 			setKittyProtocolActive(false);
 			assert.strictEqual(matchesKey("\x1b[27;1;32~", "space"), true);

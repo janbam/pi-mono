@@ -347,6 +347,10 @@ export class AgentSession {
 	private _retryAbortController: AbortController | undefined = undefined;
 	private _retryAttempt = 0;
 
+	// Pause state: escape holds the run at the next turn boundary instead of aborting it
+	private _pauseRequested = false;
+	private _pausedResumable = false;
+
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
@@ -407,6 +411,7 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
+		this._installPauseHook();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -1288,6 +1293,29 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
+	/**
+	 * Install the pause hook on the agent.
+	 *
+	 * Chains any pre-existing shouldStopAfterTurn so SDK-provided hooks keep working.
+	 * The pause only holds at boundaries where the loop would otherwise issue another
+	 * LLM request, i.e. the completed turn produced tool results. A text-only final
+	 * turn must end naturally instead of creating a resumable paused state, because
+	 * a continuation cannot start from an assistant-last transcript.
+	 */
+	private _installPauseHook(): void {
+		const userShouldStopAfterTurn = this.agent.shouldStopAfterTurn;
+		this.agent.shouldStopAfterTurn = async (context) => {
+			const userWantsStop = (await userShouldStopAfterTurn?.(context)) ?? false;
+			if (!this._pauseRequested || context.toolResults.length === 0) {
+				return userWantsStop;
+			}
+			// Consume the request and mark the run as held before the next LLM call.
+			this._pauseRequested = false;
+			this._pausedResumable = true;
+			return true;
+		};
+	}
+
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._isAgentRunActive = true;
 		try {
@@ -1298,16 +1326,57 @@ export class AgentSession {
 		} finally {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
+			// An unconsumed pause request must not leak into the next run.
+			this._pauseRequested = false;
+			await this._emitAgentSettled();
+		}
+	}
+
+	/**
+	 * Continue the transcript without adding a new message.
+	 *
+	 * Mirrors _runAgentPrompt's lifecycle so post-run retry/compaction handling,
+	 * bash flushing, and idle signaling stay consistent for bare continuations.
+	 */
+	private async _runAgentContinuation(): Promise<void> {
+		this._isAgentRunActive = true;
+		try {
+			// Settle anything the pause froze first (retryable error, compaction).
+			// These paths issue their own continuations, so no bare continuation is
+			// needed afterwards; their final post-run pass runs in the loop below.
+			let settledByPostRun = false;
+			while (await this._handlePostAgentRun()) {
+				await this.agent.continue();
+				settledByPostRun = true;
+			}
+			if (!settledByPostRun) {
+				await this.agent.continue();
+				while (await this._handlePostAgentRun()) {
+					await this.agent.continue();
+				}
+			}
+		} finally {
+			this._systemPromptOverride = undefined;
+			this._flushPendingBashMessages();
+			this._pauseRequested = false;
 			await this._emitAgentSettled();
 		}
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
-		this._lastAssistantMessage = undefined;
 		if (!msg) {
 			return false;
 		}
+
+		// A landed pause freezes the transcript: no retry, compaction-retry, or
+		// queued-message continuation may issue another LLM request. The message
+		// stays staged so resumePaused()'s post-run pass settles it after resume.
+		if (this._pausedResumable) {
+			return false;
+		}
+
+		this._lastAssistantMessage = undefined;
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
@@ -1329,7 +1398,9 @@ export class AgentSession {
 
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
-		return this.agent.hasQueuedMessages();
+		// A just-landed pause suppresses that continuation; resumePaused() or the next
+		// prompt re-delivers whatever is queued.
+		return !this._pausedResumable && this.agent.hasQueuedMessages();
 	}
 
 	/**
@@ -1409,6 +1480,9 @@ export class AgentSession {
 
 			// Flush any pending bash messages before the new prompt
 			this._flushPendingBashMessages();
+
+			// A new prompt supersedes any held pause; the message itself continues the work.
+			this._pausedResumable = false;
 
 			// Validate model
 			if (!this.model) {
@@ -1776,9 +1850,91 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		// A hard abort supersedes any pending or held pause.
+		this._pauseRequested = false;
+		this._pausedResumable = false;
 		this.abortRetry();
 		this.agent.abort();
 		await this.waitForIdle();
+	}
+
+	/** Whether a pause is requested for the active run and it will hold after the current tool calls finish. */
+	get isPauseRequested(): boolean {
+		return this._pauseRequested;
+	}
+
+	/** Whether a run is held at a turn boundary and can be resumed without injecting a new user message. */
+	get isPaused(): boolean {
+		return this._pausedResumable;
+	}
+
+	/**
+	 * Toggle the pause request for the active run.
+	 *
+	 * First call arms the pause: the run holds after its current tool batch completes,
+	 * before the next LLM request goes out. Calling again before the hold lands cancels it.
+	 * No-op when no run is active or the run is already held.
+	 */
+	requestPause(): void {
+		if (this._pausedResumable || !this.isStreaming) {
+			return;
+		}
+		this._pauseRequested = !this._pauseRequested;
+	}
+
+	/**
+	 * Continue a run held by requestPause() without injecting a new message.
+	 *
+	 * Queued steering and follow-up messages are still delivered by the continuation.
+	 * No-op when nothing is held or another run is active.
+	 */
+	async resumePaused(): Promise<void> {
+		if (!this._pausedResumable || this.isStreaming) {
+			return;
+		}
+		this._pausedResumable = false;
+		await this._runAgentContinuation();
+	}
+
+	/**
+	 * Discard a held pause and mark the transcript like a hard abort would:
+	 * an aborted assistant message is appended to the agent state, persisted
+	 * to the session file, and emitted so listeners render "Operation aborted".
+	 * No-op when nothing is held.
+	 */
+	abortPausedTurn(): void {
+		if (!this._pausedResumable) {
+			return;
+		}
+		this._pausedResumable = false;
+
+		const model = this.model;
+		if (!model) {
+			return;
+		}
+		const abortedMessage: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: Date.now(),
+		};
+		this.agent.state.messages = [...this.agent.state.messages, abortedMessage];
+		this.sessionManager.appendMessage(abortedMessage);
+		// Emit start/end so UI listeners render the aborted marker exactly like
+		// a stream-interrupted assistant message.
+		this._emit({ type: "message_start", message: abortedMessage });
+		this._emit({ type: "message_end", message: abortedMessage });
 	}
 
 	async waitForIdle(): Promise<void> {
@@ -3138,6 +3294,9 @@ export class AgentSession {
 		if (this.isStreaming) {
 			throw new Error("Wait for the current response to finish before navigating the session tree.");
 		}
+
+		// Navigation moves the leaf, so a held pause no longer has a valid continuation point.
+		this._pausedResumable = false;
 
 		const oldLeafId = this.sessionManager.getLeafId();
 
