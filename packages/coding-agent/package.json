@@ -16,6 +16,10 @@
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
 		},
+		"./theme": {
+			"types": "./dist/modes/interactive/theme/theme.d.ts",
+			"import": "./dist/modes/interactive/theme/theme.js"
+		},
 		"./rpc-entry": {
 			"import": "./dist/rpc-entry.js"
 		},

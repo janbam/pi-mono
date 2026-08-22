@@ -1,0 +1,46 @@
+{
+	"name": "@earendil-works/pless",
+	"version": "0.84.2",
+	"description": "Markdown pager CLI built on pi-tui's markdown renderer, with less-style multi-file navigation",
+	"type": "module",
+	"bin": {
+		"pless": "dist/cli.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
+		"test": "node --test --test-reporter=dot --test-reporter-destination=stdout test/*.test.ts",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"keywords": [
+		"markdown",
+		"pager",
+		"less",
+		"terminal",
+		"cli",
+		"tui"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/earendil-works/pi.git",
+		"directory": "packages/pless"
+	},
+	"dependencies": {
+		"@earendil-works/pi-coding-agent": "^0.84.2",
+		"@earendil-works/pi-tui": "^0.84.2"
+	},
+	"devDependencies": {
+		"shx": "0.4.0"
+	}
+}
