@@ -8,6 +8,10 @@
 - Added fork-owned direct registered-tool execution APIs: `AgentSession.executeTool()` for SDK hosts and `pi.executeTool()` for extensions. Direct execution preserves tool validation, extension hooks, lifecycle events, and current tool context without starting an agent turn or appending tool-result messages.
 - Added janbam fork-owned RPC commands `get_all_tools` and `execute_tool` so controlled hosts can discover and execute registered Pi tools without adding the command or result to conversation context.
 
+### Fixed
+
+- Fixed `--system-prompt ""` silently falling back to the built-in coding prompt: an explicit empty string now produces an empty base prompt with appends, context files, and skills still applied. `--append-system-prompt ""` likewise disables appended prompts entirely, replacing `APPEND_SYSTEM.md` discovery.
+
 ## [0.84.2] - 2026-08-14
 
 ### New Features

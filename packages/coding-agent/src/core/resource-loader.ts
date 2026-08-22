@@ -51,7 +51,8 @@ export interface ResourceLoader {
 }
 
 function resolvePromptInput(input: string | undefined, description: string): string | undefined {
-	if (!input) {
+	// Only undefined means "not provided": an explicit empty string is a valid prompt value
+	if (input === undefined) {
 		return undefined;
 	}
 
@@ -533,13 +534,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 			const discoveredAppendSystemPromptFile = this.discoverAppendSystemPromptFile();
 			appendSources = discoveredAppendSystemPromptFile ? [discoveredAppendSystemPromptFile] : [];
 		}
-		const baseAppend = appendSources
+		const baseAppend = (appendSources ?? [])
 			.map((s) => resolvePromptInput(s, "append system prompt"))
-			.filter((s): s is string => s !== undefined);
+			// Empty appends contribute nothing but separator noise
+			.filter((s): s is string => s !== undefined && s.length > 0);
 		this.appendSystemPrompt = this.appendSystemPromptOverride
 			? this.appendSystemPromptOverride(baseAppend)
 			: baseAppend;
-		this.appendSystemPromptSourcePaths = appendSources
+		this.appendSystemPromptSourcePaths = (appendSources ?? [])
 			.filter((source) => existsSync(source))
 			.map((source) => resolvePath(source));
 		this.loaded = true;

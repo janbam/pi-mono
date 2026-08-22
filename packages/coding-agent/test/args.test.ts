@@ -105,6 +105,11 @@ describe("parseArgs", () => {
 			expect(result.systemPrompt).toBe("You are a helpful assistant");
 		});
 
+		test("parses --system-prompt with empty string value", () => {
+			const result = parseArgs(["--system-prompt", ""]);
+			expect(result.systemPrompt).toBe("");
+		});
+
 		test("parses --append-system-prompt", () => {
 			const result = parseArgs(["--append-system-prompt", "Additional context"]);
 			expect(result.appendSystemPrompt).toEqual(["Additional context"]);
@@ -113,6 +118,11 @@ describe("parseArgs", () => {
 		test("parses multiple --append-system-prompt flags", () => {
 			const result = parseArgs(["--append-system-prompt", "Context A", "--append-system-prompt", "Context B"]);
 			expect(result.appendSystemPrompt).toEqual(["Context A", "Context B"]);
+		});
+
+		test("parses --append-system-prompt with empty string value", () => {
+			const result = parseArgs(["--append-system-prompt", ""]);
+			expect(result.appendSystemPrompt).toEqual([""]);
 		});
 
 		test("parses --mode", () => {

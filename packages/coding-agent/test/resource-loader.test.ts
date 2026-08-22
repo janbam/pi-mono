@@ -471,6 +471,28 @@ Project skill content`,
 
 			expect(loader.getAppendSystemPrompt()).toContain("Additional instructions.");
 		});
+
+		it("should treat an explicit empty systemPrompt as an empty base, skipping SYSTEM.md discovery", async () => {
+			const piDir = join(cwd, ".pi");
+			mkdirSync(piDir, { recursive: true });
+			writeFileSync(join(piDir, "SYSTEM.md"), "Project system prompt.");
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, systemPrompt: "" });
+			await loader.reload();
+			expect(loader.getSystemPrompt()).toBe("");
+			expect(loader.getSystemPromptSource()).toBeUndefined();
+		});
+
+		it("should treat an explicit empty append as no appends, skipping discovery", async () => {
+			const piDir = join(cwd, ".pi");
+			mkdirSync(piDir, { recursive: true });
+			writeFileSync(join(piDir, "APPEND_SYSTEM.md"), "Additional instructions.");
+
+			const loader = new DefaultResourceLoader({ cwd, agentDir, appendSystemPrompt: [""] });
+			await loader.reload();
+			expect(loader.getAppendSystemPrompt()).toEqual([]);
+			expect(loader.getAppendSystemPromptSources()).toEqual([]);
+		});
 	});
 
 	describe("system prompt sources", () => {

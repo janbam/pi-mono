@@ -44,7 +44,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 
-	if (customPrompt) {
+	// An explicit empty string is a valid custom prompt (no base prompt); only undefined means default
+	if (customPrompt !== undefined) {
 		let prompt = customPrompt;
 
 		if (appendSection) {
