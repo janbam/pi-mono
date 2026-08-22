@@ -239,8 +239,8 @@ pi --no-extensions -e ./my-extension.ts
 
 | Option | Description |
 |--------|-------------|
-| `--system-prompt <text>` | Replace default prompt; context files and skills are still appended |
-| `--append-system-prompt <text>` | Append to system prompt |
+| `--system-prompt <text>` | Replace default prompt; context files and skills are still appended; empty string disables the base prompt |
+| `--append-system-prompt <text>` | Append to system prompt; overrides `APPEND_SYSTEM.md` discovery (`""` disables appends) |
 | `--tui-mode <mode>` | TUI mode: `regular` (default) or experimental `fullscreen` |
 | `--use-theme <name[/name]>` | Set the initial interactive theme for this run without changing settings |
 | `--verbose` | Force verbose startup |

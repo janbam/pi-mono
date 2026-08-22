@@ -87,6 +87,31 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("custom prompt", () => {
+		test("empty string custom prompt replaces the default prompt instead of triggering it", () => {
+			const prompt = buildSystemPrompt({
+				customPrompt: "",
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			// Default prompt markers must be absent; only the cwd footer remains
+			expect(prompt).not.toContain("Available tools:");
+			expect(prompt.trim()).toBe(`Current working directory: ${process.cwd().replace(/\\/g, "/")}`);
+		});
+
+		test("undefined custom prompt keeps the default prompt", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("Available tools:");
+		});
+	});
+
 	describe("prompt guidelines", () => {
 		test("appends promptGuidelines to default guidelines", () => {
 			const prompt = buildSystemPrompt({
