@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+	Message as AnthropicMessage,
 	CacheControlEphemeral,
 	ContentBlockParam,
-	MessageCreateParamsStreaming,
+	MessageCreateParams,
 	MessageParam,
 	RawMessageStreamEvent,
 	RefusalStopDetails,
@@ -111,6 +112,37 @@ const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 	}
 	return name;
 };
+
+interface PromptCacheWarmupInvariants {
+	maxTokens: number;
+	thinking: MessageCreateParams["thinking"];
+	outputConfig: MessageCreateParams["output_config"];
+}
+
+/** Capture generation fields that payload hooks must not loosen for a private maintenance request. */
+function capturePromptCacheWarmupInvariants(params: MessageCreateParams): PromptCacheWarmupInvariants {
+	return {
+		maxTokens: params.max_tokens,
+		thinking: params.thinking ? { ...params.thinking } : undefined,
+		outputConfig: params.output_config ? { ...params.output_config } : undefined,
+	};
+}
+
+/** Restore the exact zero-output or thinking-budget ceiling after general-purpose payload hooks run. */
+function applyPromptCacheWarmupInvariants(
+	params: MessageCreateParams,
+	invariants: PromptCacheWarmupInvariants,
+): MessageCreateParams {
+	const constrained = { ...params, max_tokens: invariants.maxTokens, stream: false };
+
+	// Preserve hook changes outside generation controls while restoring the cache-compatible thinking shape.
+	if (invariants.thinking) constrained.thinking = invariants.thinking;
+	else delete constrained.thinking;
+	if (invariants.outputConfig) constrained.output_config = invariants.outputConfig;
+	else delete constrained.output_config;
+
+	return constrained;
+}
 
 /**
  * Convert content blocks to Anthropic API format
@@ -562,9 +594,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				isOAuth = created.isOAuthToken;
 			}
 			let params = buildParams(model, context, isOAuth, options);
+			const warmupInvariants = options?.promptCacheWarmup ? capturePromptCacheWarmupInvariants(params) : undefined;
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
-				params = nextParams as MessageCreateParamsStreaming;
+				params = nextParams as MessageCreateParams;
+			}
+			if (warmupInvariants) {
+				params = applyPromptCacheWarmupInvariants(params, warmupInvariants);
 			}
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
@@ -572,7 +608,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				maxRetries: 0,
 			};
 			const response = await retryProviderRequest(
-				() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
+				() =>
+					options?.promptCacheWarmup
+						? client.messages.create({ ...params, stream: false }, requestOptions).asResponse()
+						: client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -581,6 +620,31 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
+
+			if (options?.promptCacheWarmup) {
+				// Anthropic requires zero-token requests to be non-streaming; normalize only the billing result needed by the scheduler.
+				const message = (await response.json()) as AnthropicMessage;
+				output.responseId = message.id;
+				output.usage.input = message.usage.input_tokens || 0;
+				output.usage.output = message.usage.output_tokens || 0;
+				output.usage.cacheRead = message.usage.cache_read_input_tokens || 0;
+				output.usage.cacheWrite = message.usage.cache_creation_input_tokens || 0;
+				output.usage.cacheWrite1h = message.usage.cache_creation?.ephemeral_1h_input_tokens || 0;
+				output.usage.totalTokens =
+					output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+				calculateCost(model, output.usage);
+				if (!message.stop_reason) throw new Error("Anthropic cache warmup ended without a stop reason");
+				output.rawStopReason = message.stop_reason;
+				const stopReasonResult = mapStopReason(message.stop_reason, message.stop_details);
+				output.stopReason = stopReasonResult.stopReason;
+				if (stopReasonResult.errorMessage) output.errorMessage = stopReasonResult.errorMessage;
+				if (stopReasonResult.stopReason === "error") {
+					throw new Error(output.errorMessage || "Anthropic cache warmup failed");
+				}
+				stream.push({ type: "done", reason: stopReasonResult.stopReason, message: output });
+				stream.end();
+				return;
+			}
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
@@ -851,7 +915,10 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 		...base,
 		maxTokens,
 		thinkingEnabled: true,
-		thinkingBudgetTokens: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
+		// A maintenance request needs only one answer token; ordinary turns preserve the normal answer reserve.
+		thinkingBudgetTokens: options.promptCacheWarmup
+			? Math.max(0, maxTokens - 1)
+			: Math.min(adjusted.thinkingBudget, Math.max(0, maxTokens - 1024)),
 	} satisfies AnthropicOptions);
 };
 
@@ -959,7 +1026,7 @@ function buildParams(
 	context: Context,
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
-): MessageCreateParamsStreaming {
+): MessageCreateParams {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
@@ -976,7 +1043,7 @@ function buildParams(
 		deferredTools = [];
 	}
 	const deferredToolNames = new Set(deferredTools.map((tool) => normalizeToolName(tool.name)));
-	const params: MessageCreateParamsStreaming = {
+	const params: MessageCreateParams = {
 		model: model.id,
 		messages: convertMessages(
 			transformedMessages,
@@ -985,9 +1052,11 @@ function buildParams(
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
+			options?.promptCacheWarmup === true,
 		),
-		max_tokens: options?.maxTokens ?? model.maxTokens,
-		stream: true,
+		// Most warmups are zero-token requests; budget thinking supplies its required one-token answer allowance.
+		max_tokens: options?.promptCacheWarmup ? (options.maxTokens ?? 0) : (options?.maxTokens ?? model.maxTokens),
+		stream: !options?.promptCacheWarmup,
 	};
 
 	// For OAuth tokens, we MUST include Claude Code identity
@@ -1055,9 +1124,7 @@ function buildParams(
 					// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
 					params.output_config =
 						options.effort === "xhigh"
-							? ({ effort: options.effort } as unknown as NonNullable<
-									MessageCreateParamsStreaming["output_config"]
-								>)
+							? ({ effort: options.effort } as unknown as NonNullable<MessageCreateParams["output_config"]>)
 							: { effort: options.effort };
 				}
 			} else {
@@ -1138,6 +1205,7 @@ function convertMessages(
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
+	promptCacheWarmup = false,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1271,31 +1339,55 @@ function convertMessages(
 		}
 	}
 
-	// Add cache_control to the last user message to cache conversation history
+	// Keep ordinary requests unchanged; maintenance requests cache the history before their synthetic final dot.
 	if (cacheControl && params.length > 0) {
-		const lastMessage = params[params.length - 1];
-		if (lastMessage.role === "user") {
-			if (Array.isArray(lastMessage.content)) {
-				const lastBlock = lastMessage.content[lastMessage.content.length - 1];
-				if (
-					lastBlock &&
-					(lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
-				) {
-					(lastBlock as any).cache_control = cacheControl;
-				}
-			} else if (typeof lastMessage.content === "string") {
-				lastMessage.content = [
-					{
-						type: "text",
-						text: lastMessage.content,
-						cache_control: cacheControl,
-					},
-				] as any;
-			}
-		}
+		applyConversationCacheControl(params, cacheControl, promptCacheWarmup);
 	}
 
 	return params;
+}
+
+/** Add the conversation cache breakpoint while keeping a warmup's synthetic suffix outside the cached prefix. */
+function applyConversationCacheControl(
+	params: MessageParam[],
+	cacheControl: CacheControlEphemeral,
+	promptCacheWarmup: boolean,
+): void {
+	if (!promptCacheWarmup) {
+		const message = params[params.length - 1];
+		if (message.role !== "user") return;
+		if (typeof message.content === "string") {
+			message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+			return;
+		}
+		const block = message.content[message.content.length - 1];
+		if (block && (block.type === "text" || block.type === "image" || block.type === "tool_result")) {
+			message.content[message.content.length - 1] = { ...block, cache_control: cacheControl };
+		}
+		return;
+	}
+
+	// Walk backward from the message before the dot because the preceding history may end in any role.
+	for (let messageIndex = params.length - 2; messageIndex >= 0; messageIndex--) {
+		const message = params[messageIndex];
+		if (typeof message.content === "string") {
+			message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+			return;
+		}
+
+		for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex--) {
+			const block = message.content[blockIndex];
+			if (
+				block.type === "text" ||
+				block.type === "image" ||
+				block.type === "tool_result" ||
+				block.type === "tool_use"
+			) {
+				message.content[blockIndex] = { ...block, cache_control: cacheControl };
+				return;
+			}
+		}
+	}
 }
 
 function shouldUseFineGrainedToolStreamingBeta(model: Model<"anthropic-messages">, context: Context): boolean {
@@ -1344,7 +1436,7 @@ function convertTools(
 function mapStopReason(
 	reason: Anthropic.Messages.StopReason | string,
 	stopDetails?: RefusalStopDetails | null,
-): { stopReason: StopReason; errorMessage?: string } {
+): { stopReason: Extract<StopReason, "stop" | "length" | "toolUse" | "error">; errorMessage?: string } {
 	switch (reason) {
 		case "end_turn":
 			return { stopReason: "stop" };

@@ -50,6 +50,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Manually compact context, optionally with custom instructions |
+| `/warm [on\|off]` | Show, enable, or disable Claude prompt-cache warming |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML or JSONL |
 | `/import <file>` | Import and resume a session from a JSONL file |
@@ -94,6 +95,14 @@ Useful session commands:
 - `/compact` summarizes older messages to free context.
 
 See [Sessions](sessions.md) and [Compaction](compaction.md) for details.
+
+### Claude Cache Warming
+
+Run `pi --keep-cache-warm` or `pi -kw` to maintain the prompt cache for any selected model that uses the `anthropic-messages` API. The scheduler runs only in interactive mode while the agent is idle. Use `/warm on` or `/warm off` to change it for the current process, and `/warm` to report its state.
+
+After the first successful foreground request reports a cache read or write, the scheduler sends a hidden maintenance request ten seconds before expiry: five minutes for short retention, or one hour with `PI_CACHE_RETENTION=long` on compatible models. Empty, cold, and too-short sessions wait instead of creating a cache with a maintenance call. Maintenance reuses the exact effective system prompt and thinking configuration. Thinking-disabled and adaptive-thinking requests use zero output tokens; budget-based extended thinking asks `Reply only with OK.` and sets `max_tokens` to the thinking budget plus one. The status box above the editor shows the continuously warm duration and cumulative maintenance cost. The request and response never enter conversation history. Pi instead stores an internal marker on the active session-tree branch, including the effective prompt as a compact delta from the current base prompt. A resumed session reconstructs and verifies that prompt before reusing an unexpired lease; markers from a changed base prompt or a sibling branch are ignored.
+
+After each foreground agent run, interactive mode prints uncached input, output, cache-read, cache-write, and total-cost statistics for that run. The totals include all provider turns and usage reported by tools, but exclude compaction and branch-summary requests.
 
 ## Context Files
 
@@ -191,6 +200,7 @@ cat README.md | pi -p "Summarize this text"
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
 | `--list-models [search]` | List available models |
+| `--keep-cache-warm`, `-kw` | Keep Claude prompt caches warm while interactive and idle |
 
 ### Session Options
 

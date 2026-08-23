@@ -190,6 +190,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Manually compact context, optional custom instructions |
+| `/warm [on\|off]` | Show, enable, or disable Claude prompt-cache warming |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML or JSONL file |
 | `/import <file>` | Import and resume a session from a JSONL file |
@@ -280,6 +281,14 @@ Long sessions can exhaust context windows. Compaction summarizes older messages 
 **Automatic:** Enabled by default. Triggers on context overflow (recovers and retries) or when approaching the limit (proactive). Configure via `/settings` or `settings.json`.
 
 Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
+
+### Claude Cache Warming
+
+Start interactive mode with `--keep-cache-warm` or `-kw` to keep the current `anthropic-messages` model's prompt cache alive while the agent is idle. `/warm on` and `/warm off` control the scheduler for the current process; bare `/warm` reports its state.
+
+After the first successful foreground request reports a cache read or write, Pi refreshes that proven lease ten seconds before its five-minute expiry, or ten seconds before the one-hour expiry selected by `PI_CACHE_RETENTION=long`. Empty, cold, and too-short sessions wait instead of creating a cache with a maintenance call. Maintenance reuses the exact effective system prompt and thinking configuration: thinking-disabled and adaptive-thinking requests use zero output tokens, while budget-based extended thinking asks `Reply only with OK.` and allows exactly one answer token beyond its thinking budget. The status box above the editor shows how long the active branch has remained warm and the cumulative cost of hidden maintenance requests. Warm requests do not appear in conversation history. A private marker in the session tree stores the effective prompt as a compact delta from Pi's base prompt, allowing a resumed session to reconstruct and verify a lease that is still warm. Markers whose base prompt changed, or that live on sibling branches, are ignored.
+
+Interactive mode also prints a usage line after every foreground agent run. It aggregates uncached input, output, cache reads, cache writes, and total cost across provider calls and usage-reported tools in that run. Compaction and branch-summary requests are excluded.
 
 ---
 
@@ -564,6 +573,7 @@ cat README.md | pi -p "Summarize this text"
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
 | `--list-models [search]` | List available models |
+| `--keep-cache-warm`, `-kw` | Keep Claude prompt caches warm while interactive and idle |
 
 ### Session Options
 

@@ -38,5 +38,6 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "compact", description: "Manually compact the session context" },
 	{ name: "resume", description: "Resume a different session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files" },
+	{ name: "warm", description: "Show or change Claude cache warming", argumentHint: "[on|off]" },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
 ];
