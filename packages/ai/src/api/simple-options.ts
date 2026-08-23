@@ -31,7 +31,11 @@ export function buildBaseOptions(
 	return {
 		temperature: options?.temperature,
 		samplingParams,
-		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
+		// Cache maintenance normally requests no completion; budget thinking reserves one answer token above its budget.
+		maxTokens: options?.promptCacheWarmup
+			? (options.maxTokens ?? 0)
+			: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
+		promptCacheWarmup: options?.promptCacheWarmup,
 		signal: options?.signal,
 		telemetryContext: options?.telemetryContext,
 		apiKey: apiKey || options?.apiKey,

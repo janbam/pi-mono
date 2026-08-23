@@ -13,7 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -32,6 +32,8 @@ import { contentText } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
+	CacheRetention,
+	Context,
 	ImageContent,
 	Model,
 	ProviderHeaders,
@@ -161,6 +163,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
+	| { type: "model_changed"; model: Model<any>; previousModel: Model<any> | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
@@ -285,6 +288,27 @@ export interface SessionStats {
 	contextUsage?: ContextUsage;
 }
 
+/** Result of a hidden Anthropic prompt-cache maintenance request. */
+export interface PromptCacheWarmResult {
+	/** Provider request timestamp used as the beginning of the refreshed cache lease. */
+	warmedAt: number;
+	/** Effective Anthropic retention after model compatibility is applied. */
+	retention: Extract<CacheRetention, "short" | "long">;
+	/** Usage billed only to this hidden maintenance request. */
+	usage: Usage;
+}
+
+/** Compact replay data for reconstructing an extension-modified system prompt from the current base prompt. */
+export interface PromptCacheSystemPromptSnapshot {
+	version: 1;
+	/** SHA-256 identity of the base prompt this snapshot extends or replaces. */
+	baseHash: string;
+	/** Number of leading base-prompt characters reused by the effective prompt. */
+	prefixLength: number;
+	/** Effective-prompt content after the shared base prefix. */
+	suffix: string;
+}
+
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
@@ -327,6 +351,7 @@ export class AgentSession {
 	private _isAgentRunActive = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
+	private _beforeProviderRequest?: () => void | Promise<void>;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -960,6 +985,16 @@ export class AgentSession {
 		};
 	}
 
+	/** Install an app-edge barrier that runs before session-owned foreground provider requests. */
+	setBeforeProviderRequest(hook: (() => void | Promise<void>) | undefined): void {
+		this._beforeProviderRequest = hook;
+	}
+
+	/** Drain app-owned background provider work before this session uses the same provider runtime. */
+	private async _prepareProviderRequest(): Promise<void> {
+		await this._beforeProviderRequest?.();
+	}
+
 	/** Disconnect from agent events during disposal. */
 	private _disconnectFromAgent(): void {
 		if (this._unsubscribeAgent) {
@@ -1189,6 +1224,132 @@ export class AgentSession {
 		return this.agent.state.messages;
 	}
 
+	/** Stable identity for the cache-relevant model, effective prompt, thinking configuration, and tools. */
+	getPromptCacheIdentity(systemPrompt = this.agent.state.systemPrompt): string | undefined {
+		const model = this.model;
+		if (!model || model.api !== "anthropic-messages") return undefined;
+		const cacheRelevantTools = this.agent.state.tools.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+			constrainedSampling: tool.constrainedSampling,
+		}));
+		return createHash("sha256")
+			.update(
+				JSON.stringify({
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					systemPrompt,
+					thinkingLevel: this.thinkingLevel,
+					thinkingBudgets: this.agent.thinkingBudgets,
+					tools: cacheRelevantTools,
+				}),
+			)
+			.digest("base64url");
+	}
+
+	/** Capture only the part of the effective prompt that cannot be recovered from the current base prompt. */
+	createPromptCacheSystemPromptSnapshot(
+		systemPrompt = this.agent.state.systemPrompt,
+	): PromptCacheSystemPromptSnapshot {
+		let prefixLength = 0;
+		const prefixLimit = Math.min(this._baseSystemPrompt.length, systemPrompt.length);
+		while (prefixLength < prefixLimit && this._baseSystemPrompt[prefixLength] === systemPrompt[prefixLength]) {
+			prefixLength++;
+		}
+
+		return {
+			version: 1,
+			baseHash: createHash("sha256").update(this._baseSystemPrompt).digest("base64url"),
+			prefixLength,
+			suffix: systemPrompt.slice(prefixLength),
+		};
+	}
+
+	/** Reconstruct a captured effective prompt only when its base prompt is still byte-for-byte compatible. */
+	restorePromptCacheSystemPrompt(snapshot: PromptCacheSystemPromptSnapshot): string | undefined {
+		const baseHash = createHash("sha256").update(this._baseSystemPrompt).digest("base64url");
+		if (snapshot.version !== 1 || snapshot.baseHash !== baseHash) return undefined;
+		if (!Number.isInteger(snapshot.prefixLength) || snapshot.prefixLength < 0) return undefined;
+		if (snapshot.prefixLength > this._baseSystemPrompt.length) return undefined;
+
+		return this._baseSystemPrompt.slice(0, snapshot.prefixLength) + snapshot.suffix;
+	}
+
+	/** Resolve the effective Anthropic prompt-cache retention for the current model and credential environment. */
+	async getPromptCacheRetention(): Promise<PromptCacheWarmResult["retention"] | undefined> {
+		const model = this.model;
+		if (!model || model.api !== "anthropic-messages") return undefined;
+		const anthropicModel = model as Model<"anthropic-messages">;
+		const auth = await this._modelRuntime.getAuth(model);
+		const wantsLongRetention = (auth?.env?.PI_CACHE_RETENTION || process.env.PI_CACHE_RETENTION) === "long";
+		return wantsLongRetention && anthropicModel.compat?.supportsLongCacheRetention !== false ? "long" : "short";
+	}
+
+	/**
+	 * Refresh the current Anthropic Messages prompt cache without adding the
+	 * synthetic request or response to agent state or session history.
+	 */
+	async warmPromptCache(
+		signal?: AbortSignal,
+		systemPrompt = this.agent.state.systemPrompt,
+	): Promise<PromptCacheWarmResult> {
+		if (!this.isIdle || this.isCompacting) {
+			throw new Error("Prompt cache can only be warmed while the session is idle");
+		}
+		const model = this.model;
+		if (!model || model.api !== "anthropic-messages") {
+			throw new Error("Prompt cache warming requires an anthropic-messages model");
+		}
+		const anthropicModel = model as Model<"anthropic-messages">;
+
+		// Reproduce the normal request preparation path without emitting agent lifecycle events.
+		let messages = this.agent.state.messages.slice();
+		if (this.agent.transformContext) {
+			messages = await this.agent.transformContext(messages, signal);
+		}
+		const llmMessages = await this.agent.convertToLlm(messages);
+		const reasoning = this.thinkingLevel === "off" ? undefined : this.thinkingLevel;
+		const usesBudgetThinking =
+			anthropicModel.reasoning && reasoning !== undefined && anthropicModel.compat?.forceAdaptiveThinking !== true;
+		const maintenancePrompt = usesBudgetThinking ? "Reply only with OK." : ".";
+		const context: Context = {
+			// Reuse the proven foreground prompt, including a verified reconstruction after session resume.
+			systemPrompt,
+			messages: [...llmMessages, { role: "user", content: maintenancePrompt, timestamp: Date.now() }],
+			tools: this.agent.state.tools.slice(),
+		};
+
+		// Match Anthropic's provider-scoped retention resolution so the persisted lease has the real TTL.
+		const retention = await this.getPromptCacheRetention();
+		if (!retention) throw new Error("Prompt cache warming requires an anthropic-messages model");
+		const apiKey = await this.agent.getApiKey?.(model.provider);
+
+		// Execute through the session's configured provider boundary, but consume the result privately.
+		const response = await this.agent.streamFunction(model, context, {
+			// Budget thinking requires max_tokens to exceed budget_tokens; streamSimple adds the configured budget to this one.
+			maxTokens: usesBudgetThinking ? 1 : 0,
+			promptCacheWarmup: true,
+			cacheRetention: retention,
+			reasoning,
+			apiKey,
+			signal,
+			sessionId: this.agent.sessionId,
+			onPayload: this.agent.onPayload,
+			onResponse: this.agent.onResponse,
+			transport: this.agent.transport,
+			thinkingBudgets: this.agent.thinkingBudgets,
+			maxRetryDelayMs: this.agent.maxRetryDelayMs,
+		});
+		const result = await response.result();
+		if (result.stopReason === "error" || result.stopReason === "aborted") {
+			throw new Error(result.errorMessage || "Prompt cache warmup failed");
+		}
+
+		return { warmedAt: result.timestamp, retention, usage: result.usage };
+	}
+
 	/** Current steering mode */
 	get steeringMode(): "all" | "one-at-a-time" {
 		return this.agent.steeringMode;
@@ -1317,6 +1478,7 @@ export class AgentSession {
 	}
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		await this._prepareProviderRequest();
 		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
@@ -1339,6 +1501,7 @@ export class AgentSession {
 	 * bash flushing, and idle signaling stay consistent for bare continuations.
 	 */
 	private async _runAgentContinuation(): Promise<void> {
+		await this._prepareProviderRequest();
 		this._isAgentRunActive = true;
 		try {
 			// Settle anything the pause froze first (retryable error, compaction).
@@ -1508,6 +1671,7 @@ export class AgentSession {
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) {
+				await this._prepareProviderRequest();
 				await this._checkCompaction(lastAssistant, false);
 			}
 
@@ -1960,6 +2124,7 @@ export class AgentSession {
 			previousModel,
 			source,
 		});
+		this._emit({ type: "model_changed", model: nextModel, previousModel });
 	}
 
 	/**
@@ -2173,6 +2338,7 @@ export class AgentSession {
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
+		await this._prepareProviderRequest();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 
@@ -3305,15 +3471,16 @@ export class AgentSession {
 			return { cancelled: false };
 		}
 
-		// Model required for summarization
-		if (options.summarize && !this.model) {
-			throw new Error("No model available for summarization");
-		}
-
 		const targetEntry = this.sessionManager.getEntry(targetId);
 		if (!targetEntry) {
 			throw new Error(`Entry ${targetId} not found`);
 		}
+		if (options.summarize && !this.model) {
+			throw new Error("No model available for summarization");
+		}
+
+		// Drain app-owned provider work before the leaf moves, even when navigation needs no summary request.
+		await this._prepareProviderRequest();
 
 		// Collect entries to summarize (from old leaf to common ancestor)
 		const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(

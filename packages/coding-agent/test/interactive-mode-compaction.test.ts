@@ -17,6 +17,11 @@ describe("InteractiveMode compaction events", () => {
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+			cacheWarmController: {
+				invalidate: vi.fn().mockResolvedValue(undefined),
+				resume: vi.fn().mockResolvedValue(undefined),
+			},
+			session: { isStreaming: false },
 			settingsManager: { getShowTerminalProgress: () => false },
 			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
@@ -55,6 +60,8 @@ describe("InteractiveMode compaction events", () => {
 			}),
 		);
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
+		expect(fakeThis.cacheWarmController.invalidate).toHaveBeenCalledTimes(1);
+		expect(fakeThis.cacheWarmController.resume).toHaveBeenCalledTimes(1);
 	});
 
 	test("preserves steering behavior when flushing into an active agent run", async () => {

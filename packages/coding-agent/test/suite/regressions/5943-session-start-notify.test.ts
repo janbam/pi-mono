@@ -76,6 +76,8 @@ type LoadedResourcesContext = {
 };
 
 type RebindContext = {
+	session: { setBeforeProviderRequest: (callback: () => void | Promise<void>) => void };
+	cacheWarmController: { pause: () => Promise<void>; rebind: (session: RebindContext["session"]) => Promise<void> };
 	unsubscribe?: () => void;
 	applyRuntimeSettings: () => void;
 	renderCurrentSessionState: () => void;
@@ -88,6 +90,11 @@ type RebindContext = {
 
 type ReloadCommandContext = {
 	hideThinkingBlock: boolean;
+	cacheWarmController: {
+		pause: () => Promise<void>;
+		invalidate: () => Promise<void>;
+		resume: () => Promise<void>;
+	};
 	session: {
 		isStreaming: boolean;
 		isCompacting: boolean;
@@ -157,6 +164,13 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 	const editor = overrides.editor ?? {};
 	return {
 		hideThinkingBlock: overrides.hideThinkingBlock ?? false,
+		// Keep direct prototype tests wired to the same lifecycle contract as a constructed interactive mode.
+		cacheWarmController: {
+			pause: async () => {},
+			invalidate: async () => {},
+			resume: async () => {},
+			...overrides.cacheWarmController,
+		},
 		session: {
 			isStreaming: false,
 			isCompacting: false,
@@ -286,7 +300,10 @@ describe("regression #5943: session_start transient UI", () => {
 		});
 
 		try {
+			const session = { setBeforeProviderRequest: () => {} };
 			const context: RebindContext = {
+				session,
+				cacheWarmController: { pause: async () => {}, rebind: async () => {} },
 				applyRuntimeSettings: () => events.push("apply"),
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
@@ -327,7 +344,10 @@ describe("regression #5943: session_start transient UI", () => {
 		});
 
 		try {
+			const session = { setBeforeProviderRequest: () => {} };
 			const context: RebindContext = {
+				session,
+				cacheWarmController: { pause: async () => {}, rebind: async () => {} },
 				applyRuntimeSettings: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
@@ -379,7 +399,10 @@ describe("regression #5943: session_start transient UI", () => {
 		harness.setResponses([fauxAssistantMessage("assistant from start")]);
 
 		try {
+			const session = { setBeforeProviderRequest: () => {} };
 			const context: RebindContext = {
+				session,
+				cacheWarmController: { pause: async () => {}, rebind: async () => {} },
 				applyRuntimeSettings: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {

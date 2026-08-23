@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 
 type RebindContext = {
-	session: object;
+	session: { setBeforeProviderRequest: (callback: () => void | Promise<void>) => void };
+	cacheWarmController: { pause: () => Promise<void>; rebind: (session: RebindContext["session"]) => Promise<void> };
 	unsubscribe?: () => void;
 	applyRuntimeSettings: () => void;
 	renderCurrentSessionState: () => void;
@@ -21,8 +22,9 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 
 describe("overlapping startup and replacement session rebinds", () => {
 	it("does not subscribe from the stale startup rebind", async () => {
-		const startupSession = {};
-		const replacementSession = {};
+		// Give both synthetic sessions the lifecycle surface owned by real AgentSession instances.
+		const startupSession = { setBeforeProviderRequest: () => {} };
+		const replacementSession = { setBeforeProviderRequest: () => {} };
 		let resolveStartupBind!: () => void;
 		let resolveReplacementBind!: () => void;
 
@@ -39,6 +41,7 @@ describe("overlapping startup and replacement session rebinds", () => {
 
 		const context: RebindContext = {
 			session: startupSession,
+			cacheWarmController: { pause: async () => {}, rebind: async () => {} },
 			applyRuntimeSettings: () => {},
 			renderCurrentSessionState: () => {},
 			bindCurrentSessionExtensions: () => {

@@ -10,6 +10,7 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 
 type ShutdownThis = {
 	isShuttingDown: boolean;
+	cacheWarmController: { dispose: () => Promise<void> };
 	unregisterSignalHandlers: () => void;
 	runtimeHost: { dispose: () => Promise<void> };
 	ui: { terminal: { drainInput: (ms: number) => Promise<void> } };
@@ -58,6 +59,8 @@ describe("InteractiveMode SIGTERM shutdown with signal-exit (#5724)", () => {
 		const dispose = deferred();
 		const context: ShutdownThis = {
 			isShuttingDown: false,
+			// Model the controller owned by every constructed interactive mode without changing this test's signal-order focus.
+			cacheWarmController: { dispose: vi.fn(async () => {}) },
 			unregisterSignalHandlers: vi.fn(() => {
 				order.push("unregister");
 			}),

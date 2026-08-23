@@ -65,6 +65,12 @@ import {
 	computeCacheWaste,
 	detectCacheMiss,
 } from "../../core/cache-stats.ts";
+import {
+	CacheWarmController,
+	type CacheWarmState,
+	type ForegroundCacheRefresh,
+	hasPromptCacheActivity,
+} from "../../core/cache-warmup.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -98,7 +104,12 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
-import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import {
+	addUsageToTotals,
+	createUsageTotals,
+	getUsageCostBreakdown,
+	type UsageTotals,
+} from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -238,6 +249,20 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function formatElapsed(milliseconds: number): string {
+	const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	return hours > 0
+		? `${hours}h ${minutes.toString().padStart(2, "0")}m ${seconds.toString().padStart(2, "0")}s`
+		: `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function formatCost(cost: number): string {
+	return `$${cost.toFixed(cost >= 0.01 ? 3 : 4)}`;
+}
+
 export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
@@ -332,6 +357,8 @@ export interface InteractiveModeOptions {
 	tuiMode?: TuiMode;
 	/** Initial interactive theme setting for this invocation. */
 	initialThemeSetting?: string;
+	/** Keep Anthropic Messages prompt caches warm while the agent is idle. */
+	keepCacheWarm?: boolean;
 }
 
 interface InteractiveTuiOptions {
@@ -509,6 +536,10 @@ export class InteractiveMode {
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
+	private cacheWarmContainer: Container;
+	private cacheWarmController: CacheWarmController;
+	private turnUsage: UsageTotals | undefined;
+	private turnCacheRefresh: ForegroundCacheRefresh | undefined;
 
 	// Custom footer from extension (undefined = use built-in footer)
 	private customFooter: (Component & { dispose?(): void }) | undefined = undefined;
@@ -575,6 +606,7 @@ export class InteractiveMode {
 		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
+		this.cacheWarmContainer = new Container();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -591,6 +623,12 @@ export class InteractiveMode {
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);
+		this.cacheWarmController = new CacheWarmController(this.session, {
+			enabled: options.keepCacheWarm,
+			onStateChange: (state) => this.renderCacheWarmState(state),
+			onError: (message) => this.showWarning(`Cache warming failed: ${message}`),
+		});
+		this.session.setBeforeProviderRequest(() => this.cacheWarmController.pause());
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -891,6 +929,7 @@ export class InteractiveMode {
 			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
 			{ component: this.statusContainer, shrink: 1, minSize: 0 },
 			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
+			{ component: this.cacheWarmContainer, shrink: 1, minSize: 0 },
 			{ component: this.editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
 			{ component: this.footerContainer, shrink: 1, minSize: 1 },
@@ -904,6 +943,7 @@ export class InteractiveMode {
 			this.pendingMessagesContainer,
 			this.statusContainer,
 			this.widgetContainerAbove,
+			this.cacheWarmContainer,
 			this.editorContainer,
 			this.widgetContainerBelow,
 			this.footerContainer,
@@ -1873,24 +1913,28 @@ export class InteractiveMode {
 					}
 				},
 				navigateTree: async (targetId, options) => {
-					const result = await this.session.navigateTree(targetId, {
-						summarize: options?.summarize,
-						customInstructions: options?.customInstructions,
-						replaceInstructions: options?.replaceInstructions,
-						label: options?.label,
-					});
-					if (result.cancelled) {
-						return { cancelled: true };
-					}
+					try {
+						const result = await this.session.navigateTree(targetId, {
+							summarize: options?.summarize,
+							customInstructions: options?.customInstructions,
+							replaceInstructions: options?.replaceInstructions,
+							label: options?.label,
+						});
+						if (result.cancelled) {
+							return { cancelled: true };
+						}
 
-					this.chatContainer.clear();
-					this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
+						this.chatContainer.clear();
+						this.renderInitialMessages();
+						if (result.editorText && !this.editor.getText().trim()) {
+							this.editor.setText(result.editorText);
+						}
+						this.showStatus("Navigated to selected point");
+						void this.flushCompactionQueue({ willRetry: false });
+						return { cancelled: false };
+					} finally {
+						await this.cacheWarmController.resume();
 					}
-					this.showStatus("Navigated to selected point");
-					void this.flushCompactionQueue({ willRetry: false });
-					return { cancelled: false };
 				},
 				switchSession: async (sessionPath, options) => {
 					return this.handleResumeSession(sessionPath, options);
@@ -1970,6 +2014,8 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
+		this.session.setBeforeProviderRequest(() => this.cacheWarmController.pause());
+		await this.cacheWarmController.rebind(this.session);
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	}
@@ -2089,6 +2135,59 @@ export class InteractiveMode {
 		if (hadActiveStatusIndicator && this.options.tuiMode === "regular" && this.ui.getClearOnShrink()) {
 			this.statusContainer.addChild(this.idleStatus);
 		}
+	}
+
+	/** Render the process-local cache scheduler directly above the message editor. */
+	private renderCacheWarmState(state: CacheWarmState): void {
+		this.cacheWarmContainer.clear();
+		if (!state.enabled || !state.eligible || !state.idle) {
+			this.ui.requestRender();
+			return;
+		}
+
+		let status: string;
+		if (state.warming) {
+			status =
+				state.active && state.warmSince !== undefined
+					? `refreshing now · held warm for ${formatElapsed(Date.now() - state.warmSince)}`
+					: "refreshing now";
+		} else if (state.active && state.warmSince !== undefined) {
+			status = `held warm for ${formatElapsed(Date.now() - state.warmSince)}`;
+		} else if (state.retrying) {
+			status = "retrying after an error";
+		} else if (state.cacheUnavailable) {
+			status = "cache unavailable";
+		} else if (state.error) {
+			status = "stopped after an error";
+		} else {
+			status = "waiting for first request";
+		}
+		const refreshLabel = state.refreshCount === 1 ? "1 refresh" : `${state.refreshCount} refreshes`;
+		const text = `${theme.bold("Claude cache warming")} · ${status} · ${refreshLabel} · maintenance cost ${formatCost(state.totalCost)}`;
+		const borderColor = (line: string) =>
+			theme.fg(state.error || state.cacheUnavailable ? "warning" : "accent", line);
+		this.cacheWarmContainer.addChild(new DynamicBorder(borderColor));
+		this.cacheWarmContainer.addChild(new Text(text, 1, 0));
+		this.cacheWarmContainer.addChild(new DynamicBorder(borderColor));
+		this.ui.requestRender();
+	}
+
+	/** Append the usage billed to one foreground agent run after all retries and tool-loop turns settle. */
+	private showTurnUsage(): void {
+		const usage = this.turnUsage;
+		this.turnUsage = undefined;
+		if (!usage) return;
+		const text = [
+			"Turn usage",
+			`uncached input ${usage.input.toLocaleString()}`,
+			`output ${usage.output.toLocaleString()}`,
+			`cache read ${usage.cacheRead.toLocaleString()}`,
+			`cache write ${usage.cacheWrite.toLocaleString()}`,
+			`cost ${formatCost(usage.cost)}`,
+		].join(" · ");
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(theme.fg("dim", text), 1, 0));
+		this.ui.requestRender();
 	}
 
 	private setWorkingVisible(visible: boolean): void {
@@ -3034,6 +3133,11 @@ export class InteractiveMode {
 				await this.handleReloadCommand();
 				return;
 			}
+			if (text === "/warm" || text.startsWith("/warm ")) {
+				this.editor.setText("");
+				await this.handleWarmCommand(text);
+				return;
+			}
 			if (text === "/debug") {
 				this.handleDebugCommand();
 				this.editor.setText("");
@@ -3136,6 +3240,11 @@ export class InteractiveMode {
 
 		switch (event.type) {
 			case "agent_start":
+				// Keep one accounting window across retries and session-owned continuations until agent_settled.
+				if (!this.turnUsage) {
+					this.turnUsage = createUsageTotals();
+					this.turnCacheRefresh = undefined;
+				}
 				this.pendingTools.clear();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
@@ -3183,6 +3292,11 @@ export class InteractiveMode {
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
+				await this.cacheWarmController.invalidate();
+				break;
+
+			case "model_changed":
+				await this.cacheWarmController.invalidate();
 				break;
 
 			case "message_start":
@@ -3246,6 +3360,25 @@ export class InteractiveMode {
 
 			case "message_end":
 				if (event.message.role === "user") break;
+				if (this.turnUsage) {
+					if (event.message.role === "assistant") {
+						addUsageToTotals(this.turnUsage, event.message.usage);
+						if (
+							event.message.api === "anthropic-messages" &&
+							event.message.stopReason !== "error" &&
+							event.message.stopReason !== "aborted" &&
+							hasPromptCacheActivity(event.message.usage)
+						) {
+							this.turnCacheRefresh = {
+								provider: event.message.provider,
+								model: event.message.model,
+								warmedAt: event.message.timestamp,
+							};
+						}
+					} else if (event.message.role === "toolResult" && event.message.usage) {
+						addUsageToTotals(this.turnUsage, event.message.usage);
+					}
+				}
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
 					let errorMessage: string | undefined;
@@ -3346,10 +3479,15 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
-			case "agent_settled":
+			case "agent_settled": {
+				const cacheRefresh = this.turnCacheRefresh;
+				this.turnCacheRefresh = undefined;
+				this.showTurnUsage();
 				await this.handlePauseSettled();
 				await this.checkShutdownRequested();
+				await this.cacheWarmController.resumeAfterForegroundRequest(cacheRefresh);
 				break;
+			}
 
 			case "compaction_start": {
 				if (this.settingsManager.getShowTerminalProgress()) {
@@ -3400,6 +3538,10 @@ export class InteractiveMode {
 					}
 				}
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
+				if (!event.willRetry) {
+					await this.cacheWarmController.invalidate();
+					if (!this.session.isStreaming) await this.cacheWarmController.resume();
+				}
 				this.ui.requestRender();
 				break;
 			}
@@ -3857,6 +3999,7 @@ export class InteractiveMode {
 	private async shutdown(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
+		await this.cacheWarmController.dispose();
 		// Keep signal handlers registered until terminal cleanup has completed.
 		// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 		// dispatch and re-sends the signal if only its own listeners remain.
@@ -5202,6 +5345,7 @@ export class InteractiveMode {
 							this.clearStatusIndicator("branchSummary");
 						}
 						this.defaultEditor.onEscape = originalOnEscape;
+						await this.cacheWarmController.resume();
 					}
 				},
 				() => {
@@ -5822,6 +5966,40 @@ export class InteractiveMode {
 	// Command handlers
 	// =========================================================================
 
+	private async handleWarmCommand(text: string): Promise<void> {
+		const argument = text.slice("/warm".length).trim().toLowerCase();
+		if (argument && argument !== "on" && argument !== "off") {
+			this.showWarning("Usage: /warm [on|off]");
+			return;
+		}
+
+		if (argument) {
+			await this.cacheWarmController.setEnabled(argument === "on");
+		}
+		const state = this.cacheWarmController.getState();
+		if (!state.enabled) {
+			this.showStatus("Claude cache warming: off");
+		} else if (!state.eligible) {
+			this.showStatus("Claude cache warming: on (waiting for an anthropic-messages model)");
+		} else if (state.warming) {
+			this.showStatus("Claude cache warming: refreshing now");
+		} else if (state.active && state.warmSince !== undefined) {
+			this.showStatus(
+				`Claude cache warming: on, held warm for ${formatElapsed(Date.now() - state.warmSince)}, maintenance cost ${formatCost(state.totalCost)}`,
+			);
+		} else if (state.retrying) {
+			this.showStatus("Claude cache warming: on, retrying after an error");
+		} else if (state.cacheUnavailable) {
+			this.showStatus(
+				`Claude cache warming: on, cache unavailable, maintenance cost ${formatCost(state.totalCost)}`,
+			);
+		} else if (state.error) {
+			this.showStatus("Claude cache warming: on, stopped after an error");
+		} else {
+			this.showStatus("Claude cache warming: on, waiting for first request");
+		}
+	}
+
 	private async handleReloadCommand(): Promise<void> {
 		if (this.session.isStreaming) {
 			this.showWarning("Wait for the current response to finish before reloading.");
@@ -5831,6 +6009,7 @@ export class InteractiveMode {
 			this.showWarning("Wait for compaction to finish before reloading.");
 			return;
 		}
+		await this.cacheWarmController.pause();
 
 		this.resetExtensionUI();
 
@@ -5904,11 +6083,14 @@ export class InteractiveMode {
 			);
 			dismissReloadBox(this.editor as Component);
 			reloadBoxDismissed = true;
+			await this.cacheWarmController.invalidate();
+			await this.cacheWarmController.resume();
 		} catch (error) {
 			if (!reloadBoxDismissed) {
 				dismissReloadBox(previousEditor as Component);
 			}
 			this.showError(`Reload failed: ${error instanceof Error ? error.message : String(error)}`);
+			await this.cacheWarmController.resume();
 		}
 	}
 
@@ -6525,6 +6707,8 @@ export class InteractiveMode {
 	}
 
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
+		void this.cacheWarmController.dispose();
+		this.cacheWarmContainer.clear();
 		this.disposeActiveSelector();
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);

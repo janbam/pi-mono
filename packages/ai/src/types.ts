@@ -189,6 +189,12 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	samplingParams?: Record<string, unknown>;
 	maxTokens?: number;
 	/**
+	 * Anthropic prompt-cache maintenance request. Preserves the caller's explicit
+	 * output allowance and places the final cache breakpoint before the caller's
+	 * synthetic last message. Other provider adapters ignore this option.
+	 */
+	promptCacheWarmup?: boolean;
+	/**
 	 * Preferred transport for providers that support multiple transports.
 	 * Providers that do not support this option ignore it.
 	 */

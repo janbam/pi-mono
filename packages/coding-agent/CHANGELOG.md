@@ -7,6 +7,8 @@
 - Added turn pause: Escape while streaming now holds the run at the next turn boundary (current tool calls finish, tool results are persisted, the next LLM request is not sent). While paused, typing a message continues the run with that message injected before the next request, and Escape resumes without injecting anything. Pressing Escape again before the pause lands cancels it; queued steering/follow-up messages are restored to the editor. New keybindings `app.turn.pause` and `app.turn.resume` (both default `escape`).
 - Added fork-owned direct registered-tool execution APIs: `AgentSession.executeTool()` for SDK hosts and `pi.executeTool()` for extensions. Direct execution preserves tool validation, extension hooks, lifecycle events, and current tool context without starting an agent turn or appending tool-result messages.
 - Added janbam fork-owned RPC commands `get_all_tools` and `execute_tool` so controlled hosts can discover and execute registered Pi tools without adding the command or result to conversation context.
+- Added opt-in Claude prompt-cache warming for all `anthropic-messages` models with `--keep-cache-warm`/`-kw`, `/warm`, verified active-branch lease recovery across resumed sessions, exact foreground prompt/thinking reuse, and an idle duration/cost display. Maintenance starts only after a successful foreground request establishes a cache lease.
+- Added foreground agent-run usage summaries with uncached input, output, cache reads, cache writes, and total cost; compaction and branch-summary usage remains separate.
 
 ### Fixed
 

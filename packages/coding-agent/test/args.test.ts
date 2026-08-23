@@ -353,6 +353,14 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("cache warming flag", () => {
+		test.each(["--keep-cache-warm", "-kw"])("parses %s", (flag) => {
+			const result = parseArgs([flag]);
+			expect(result.keepCacheWarm).toBe(true);
+			expect(result.diagnostics).toEqual([]);
+		});
+	});
+
 	describe("--tui-mode flag", () => {
 		test.each(["regular", "fullscreen"] as const)("parses %s mode", (mode) => {
 			const result = parseArgs(["--tui-mode", mode]);

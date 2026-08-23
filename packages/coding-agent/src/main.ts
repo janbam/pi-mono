@@ -938,6 +938,7 @@ export async function main(args: string[], options?: MainOptions) {
 			verbose: parsed.verbose,
 			tuiMode: parsed.tuiMode,
 			initialThemeSetting: parsed.useTheme,
+			keepCacheWarm: parsed.keepCacheWarm,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();
