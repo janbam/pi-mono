@@ -39,6 +39,7 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
+import { enableApiRequestLogging } from "./core/api-request-logging.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
@@ -617,6 +618,12 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 	time("parseArgs");
+
+	// Must run after the bootstrap configureHttpDispatcher() above so the wrapper sits on
+	// undici's installed fetch and survives later dispatcher reconfigurations.
+	if (parsed.logApiRequests) {
+		enableApiRequestLogging(parsed.logApiRequests);
+	}
 
 	if (parsed.version) {
 		console.log(VERSION);

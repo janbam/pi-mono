@@ -47,6 +47,7 @@ export interface Args {
 	noContextFiles?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
+	logApiRequests?: string;
 	tuiMode?: TuiMode;
 	verbose?: boolean;
 	keepCacheWarm?: boolean;
@@ -211,6 +212,14 @@ export function parseArgs(args: string[]): Args {
 			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--log-api-requests") {
+			const value = args[i + 1];
+			if (value === undefined || value.startsWith("-") || value.length === 0) {
+				result.diagnostics.push({ type: "error", message: "--log-api-requests requires a file path" });
+			} else {
+				result.logApiRequests = value;
+				i++;
+			}
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -307,6 +316,8 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
+  --log-api-requests <file>      Log every outgoing API request (URL, redacted headers, body) to a
+                                 JSONL file; covers fetch-based providers, not amazon-bedrock
   --help, -h                     Show this help
   --version, -v                  Show version number
 
