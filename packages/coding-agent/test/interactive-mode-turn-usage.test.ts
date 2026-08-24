@@ -169,6 +169,7 @@ describe("InteractiveMode turn usage", () => {
 			idle: true,
 			warming: false,
 			active: false,
+			cold: false,
 			cacheUnavailable: true,
 			retrying: false,
 			refreshCount: 2,
@@ -183,6 +184,32 @@ describe("InteractiveMode turn usage", () => {
 		expect(rendered).not.toContain("retrying");
 	});
 
+	it("shows when the cache lease has gone cold", () => {
+		const context: CacheWarmRenderContext = {
+			cacheWarmContainer: new Container(),
+			ui: { requestRender: vi.fn() },
+		};
+
+		renderCacheWarmState.call(context, {
+			enabled: true,
+			eligible: true,
+			idle: true,
+			warming: false,
+			active: false,
+			cold: true,
+			cacheUnavailable: false,
+			retrying: false,
+			refreshCount: 2,
+			totalCost: 0.021,
+		});
+
+		const rendered = stripAnsi(context.cacheWarmContainer.render(120).join("\n"));
+		expect(rendered).toContain("cache is cold");
+		expect(rendered).toContain("2 refreshes");
+		expect(rendered).toContain("maintenance cost $0.021");
+		expect(rendered).not.toContain("waiting for first request");
+	});
+
 	it("reports terminal cache-unavailable accounting from the warm command", async () => {
 		const state: CacheWarmState = {
 			enabled: true,
@@ -190,6 +217,7 @@ describe("InteractiveMode turn usage", () => {
 			idle: true,
 			warming: false,
 			active: false,
+			cold: false,
 			cacheUnavailable: true,
 			retrying: false,
 			refreshCount: 2,
@@ -206,6 +234,32 @@ describe("InteractiveMode turn usage", () => {
 		await handleWarmCommand.call(context, "/warm");
 
 		expect(showStatus).toHaveBeenCalledWith("Claude cache warming: on, cache unavailable, maintenance cost $0.021");
+		expect(context.cacheWarmController.setEnabled).not.toHaveBeenCalled();
+	});
+
+	it("reports a cold lease from the warm command", async () => {
+		const state: CacheWarmState = {
+			enabled: true,
+			eligible: true,
+			idle: true,
+			warming: false,
+			active: false,
+			cold: true,
+			cacheUnavailable: false,
+			retrying: false,
+			refreshCount: 2,
+			totalCost: 0.021,
+		};
+		const showStatus = vi.fn();
+		const context = {
+			cacheWarmController: { getState: () => state, setEnabled: vi.fn() },
+			showStatus,
+			showWarning: vi.fn(),
+		};
+
+		await handleWarmCommand.call(context, "/warm");
+
+		expect(showStatus).toHaveBeenCalledWith("Claude cache warming: on, cache is cold, maintenance cost $0.021");
 		expect(context.cacheWarmController.setEnabled).not.toHaveBeenCalled();
 	});
 });

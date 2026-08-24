@@ -2153,6 +2153,8 @@ export class InteractiveMode {
 					: "refreshing now";
 		} else if (state.active && state.warmSince !== undefined) {
 			status = `held warm for ${formatElapsed(Date.now() - state.warmSince)}`;
+		} else if (state.cold) {
+			status = "cache is cold";
 		} else if (state.retrying) {
 			status = "retrying after an error";
 		} else if (state.cacheUnavailable) {
@@ -5987,6 +5989,8 @@ export class InteractiveMode {
 			this.showStatus(
 				`Claude cache warming: on, held warm for ${formatElapsed(Date.now() - state.warmSince)}, maintenance cost ${formatCost(state.totalCost)}`,
 			);
+		} else if (state.cold) {
+			this.showStatus(`Claude cache warming: on, cache is cold, maintenance cost ${formatCost(state.totalCost)}`);
 		} else if (state.retrying) {
 			this.showStatus("Claude cache warming: on, retrying after an error");
 		} else if (state.cacheUnavailable) {

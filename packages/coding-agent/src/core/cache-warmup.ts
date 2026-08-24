@@ -37,6 +37,8 @@ export interface CacheWarmState {
 	idle: boolean;
 	warming: boolean;
 	active: boolean;
+	/** Whether a previously proven lease expired and now requires foreground traffic to recreate the cache. */
+	cold: boolean;
 	cacheUnavailable: boolean;
 	retrying: boolean;
 	warmSince?: number;
@@ -311,9 +313,6 @@ export class CacheWarmController {
 			this.error = undefined;
 			if (this.lease?.cacheActive && this.lease.expiresAt > Date.now()) {
 				this.scheduleWarm(this.lease.expiresAt - WARM_LEAD_MS);
-			} else if (this.lease?.cacheActive) {
-				// Cache warming maintains a proven lease; an empty or cold session must first be populated by a real request.
-				this.lease = undefined;
 			}
 		} catch (error) {
 			this.reportError(error);
@@ -336,14 +335,16 @@ export class CacheWarmController {
 		const eligible = this.session.model?.api === "anthropic-messages";
 		const idle = this.session.isIdle && !this.session.isCompacting && !this.paused;
 		const leaseActive = this.lease?.cacheActive === true && this.lease.expiresAt > Date.now();
+		const cold = this.lease?.cacheActive === true && this.lease.expiresAt <= Date.now();
 		return {
 			enabled: this.enabled,
 			eligible,
 			idle,
 			warming: this.warmPromise !== undefined,
 			active: this.enabled && eligible && idle && leaseActive,
+			cold,
 			cacheUnavailable: this.lease?.cacheActive === false,
-			retrying: this.error !== undefined && this.warmTimer !== undefined,
+			retrying: !cold && this.error !== undefined && this.warmTimer !== undefined,
 			warmSince: leaseActive ? this.lease?.warmSince : undefined,
 			expiresAt: leaseActive ? this.lease?.expiresAt : undefined,
 			refreshCount: this.lease?.refreshCount ?? 0,
@@ -432,6 +433,9 @@ export class CacheWarmController {
 
 	private scheduleWarm(at: number): void {
 		this.clearWarmTimer();
+		const lease = this.lease;
+		// Maintenance may renew only a proven live lease; foreground traffic must recreate a cold cache.
+		if (!lease?.cacheActive || Date.now() >= lease.expiresAt || at >= lease.expiresAt) return;
 		const delay = Math.max(0, at - Date.now());
 		this.warmTimer = setTimeout(() => {
 			this.warmTimer = undefined;
@@ -444,6 +448,10 @@ export class CacheWarmController {
 		try {
 			const lease = this.lease;
 			if (!lease) return;
+			if (!lease.cacheActive || lease.expiresAt <= Date.now()) {
+				this.emitState();
+				return;
+			}
 			if (this.session.getPromptCacheIdentity(lease.systemPrompt) !== lease.cacheIdentity) {
 				this.lease = undefined;
 				this.emitState();
@@ -467,8 +475,11 @@ export class CacheWarmController {
 	private async warmNow(lease: CacheWarmLease): Promise<void> {
 		if (this.warmPromise || !this.enabled || this.paused) return;
 		const abortController = new AbortController();
+		// Keep cancellation live through asynchronous preparation so no provider attempt can begin after expiry.
+		const expiryTimer = setTimeout(() => abortController.abort(), Math.max(0, lease.expiresAt - Date.now()));
 		this.warmAbortController = abortController;
 		this.warmPromise = this.executeWarm(lease, abortController.signal).finally(() => {
+			clearTimeout(expiryTimer);
 			this.warmAbortController = undefined;
 			this.warmPromise = undefined;
 			this.emitState();
@@ -479,7 +490,7 @@ export class CacheWarmController {
 
 	private async executeWarm(activeLease: CacheWarmLease, signal: AbortSignal): Promise<void> {
 		try {
-			const result = await this.session.warmPromptCache(signal, activeLease.systemPrompt);
+			const result = await this.session.warmPromptCache(signal, activeLease.systemPrompt, activeLease.expiresAt);
 			if (signal.aborted || !this.enabled || this.paused) return;
 			if (!hasPromptCacheActivity(result.usage)) {
 				// Preserve billed maintenance accounting while recording that this branch no longer has a proven cache lease.
@@ -526,7 +537,7 @@ export class CacheWarmController {
 			this.error = undefined;
 			this.scheduleWarm(lease.expiresAt - WARM_LEAD_MS);
 		} catch (error) {
-			if (signal.aborted) return;
+			if (signal.aborted || activeLease.expiresAt <= Date.now()) return;
 			this.reportError(error);
 			this.scheduleWarm(Date.now() + FAILED_WARM_RETRY_MS);
 		}

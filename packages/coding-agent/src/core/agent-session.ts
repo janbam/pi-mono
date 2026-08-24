@@ -1294,6 +1294,7 @@ export class AgentSession {
 	async warmPromptCache(
 		signal?: AbortSignal,
 		systemPrompt = this.agent.state.systemPrompt,
+		expiresAt?: number,
 	): Promise<PromptCacheWarmResult> {
 		if (!this.isIdle || this.isCompacting) {
 			throw new Error("Prompt cache can only be warmed while the session is idle");
@@ -1331,6 +1332,7 @@ export class AgentSession {
 			// Budget thinking requires max_tokens to exceed budget_tokens; streamSimple adds the configured budget to this one.
 			maxTokens: usesBudgetThinking ? 1 : 0,
 			promptCacheWarmup: true,
+			promptCacheWarmupExpiresAt: expiresAt,
 			cacheRetention: retention,
 			reasoning,
 			apiKey,

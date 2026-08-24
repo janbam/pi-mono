@@ -294,6 +294,15 @@ export interface AnthropicOptions extends StreamOptions {
 	client?: Anthropic;
 }
 
+/** Whether a maintenance request has crossed the proven cache lease's hard deadline. */
+function isPromptCacheWarmupExpired(options: AnthropicOptions | undefined): boolean {
+	return (
+		options?.promptCacheWarmup === true &&
+		options.promptCacheWarmupExpiresAt !== undefined &&
+		Date.now() >= options.promptCacheWarmupExpiresAt
+	);
+}
+
 function mergeHeaders(...headerSources: (ProviderHeaders | undefined)[]): ProviderHeaders {
 	const merged: ProviderHeaders = {};
 	for (const headers of headerSources) {
@@ -608,10 +617,16 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				maxRetries: 0,
 			};
 			const response = await retryProviderRequest(
-				() =>
-					options?.promptCacheWarmup
+				() => {
+					// Enforce the absolute lease deadline even when synchronous hooks starve the abort timer.
+					if (isPromptCacheWarmupExpired(options)) {
+						throw new Error("Prompt cache warmup expired before provider dispatch");
+					}
+					options?.signal?.throwIfAborted();
+					return options?.promptCacheWarmup
 						? client.messages.create({ ...params, stream: false }, requestOptions).asResponse()
-						: client.messages.create({ ...params, stream: true }, requestOptions).asResponse(),
+						: client.messages.create({ ...params, stream: true }, requestOptions).asResponse();
+				},
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -842,7 +857,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				// partialJson is only a streaming scratch buffer; never persist it.
 				delete (block as { partialJson?: string }).partialJson;
 			}
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || isPromptCacheWarmupExpired(options) ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { streamSimple } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
@@ -23,6 +23,8 @@ class PayloadCaptured extends Error {
 		this.name = "PayloadCaptured";
 	}
 }
+
+afterEach(() => vi.restoreAllMocks());
 
 function makeModel(): Model<"anthropic-messages"> {
 	return {
@@ -220,5 +222,31 @@ describe("Anthropic prompt-cache warmup requests", () => {
 			stopReason: "length",
 			usage: { input: 3, output: 0, cacheRead: 120, cacheWrite: 5, totalTokens: 128 },
 		});
+	});
+
+	it("does not dispatch after synchronous payload preparation crosses the absolute deadline", async () => {
+		const fetch = vi.fn(async () => makeWarmupResponse()) as unknown as typeof globalThis.fetch;
+		const expiresAt = 2_000;
+		const now = vi.spyOn(Date, "now").mockReturnValue(expiresAt - 1);
+
+		const result = await streamSimple(
+			makeModel(),
+			{ messages: [{ role: "user", content: ".", timestamp: 1 }] },
+			{
+				apiKey: "fake-key",
+				fetch,
+				maxTokens: 0,
+				promptCacheWarmup: true,
+				promptCacheWarmupExpiresAt: expiresAt,
+				onPayload: (payload) => {
+					// Simulate synchronous extension work starving timers until the lease is already cold.
+					now.mockReturnValue(expiresAt);
+					return payload;
+				},
+			},
+		).result();
+
+		expect(fetch).not.toHaveBeenCalled();
+		expect(result.stopReason).toBe("aborted");
 	});
 });
