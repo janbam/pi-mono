@@ -172,7 +172,7 @@ export function omitCacheWarmEntries(
 }
 
 /**
- * Keeps an Anthropic Messages prompt cache alive while a session is idle.
+ * Keeps an Anthropic Messages prompt cache alive while a session is idle or executing tools.
  * Durable markers are interpreted only along the SessionManager's active branch.
  */
 export class CacheWarmController {
@@ -286,7 +286,7 @@ export class CacheWarmController {
 			this.emitState();
 			return;
 		}
-		if (!this.session.isIdle || this.session.isCompacting) {
+		if (!this.session.canWarmPromptCache) {
 			this.emitState();
 			return;
 		}
@@ -334,6 +334,7 @@ export class CacheWarmController {
 	getState(): CacheWarmState {
 		const eligible = this.session.model?.api === "anthropic-messages";
 		const idle = this.session.isIdle && !this.session.isCompacting && !this.paused;
+		const available = this.session.canWarmPromptCache && !this.paused;
 		const leaseActive = this.lease?.cacheActive === true && this.lease.expiresAt > Date.now();
 		const cold = this.lease?.cacheActive === true && this.lease.expiresAt <= Date.now();
 		return {
@@ -341,7 +342,7 @@ export class CacheWarmController {
 			eligible,
 			idle,
 			warming: this.warmPromise !== undefined,
-			active: this.enabled && eligible && idle && leaseActive,
+			active: this.enabled && eligible && available && leaseActive,
 			cold,
 			cacheUnavailable: this.lease?.cacheActive === false,
 			retrying: !cold && this.error !== undefined && this.warmTimer !== undefined,
@@ -444,7 +445,7 @@ export class CacheWarmController {
 	}
 
 	private async syncAndWarm(): Promise<void> {
-		if (!this.enabled || this.paused || !this.session.isIdle || this.session.isCompacting) return;
+		if (!this.enabled || this.paused || !this.session.canWarmPromptCache) return;
 		try {
 			const lease = this.lease;
 			if (!lease) return;

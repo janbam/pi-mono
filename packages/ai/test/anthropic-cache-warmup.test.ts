@@ -122,6 +122,50 @@ describe("Anthropic prompt-cache warmup requests", () => {
 		expect(dot).toBe(".");
 	});
 
+	it("keeps partial sequential and synthetic results outside the shared tool-use prefix", async () => {
+		const payload = await captureWarmupPayload({
+			messages: [
+				{ role: "user", content: "Run the long tool", timestamp: 1 },
+				{
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "long-tool-call", name: "long_tool", arguments: {} },
+						{ type: "toolCall", id: "parallel-tool-call", name: "parallel_tool", arguments: {} },
+					],
+					api: "anthropic-messages",
+					provider: "custom-anthropic-proxy",
+					model: "claude-compatible",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "toolUse",
+					timestamp: 2,
+				},
+				{
+					role: "toolResult",
+					toolCallId: "long-tool-call",
+					toolName: "long_tool",
+					content: [{ type: "text", text: "first result" }],
+					isError: false,
+					timestamp: 3,
+				},
+				{ role: "user", content: ".", timestamp: 4 },
+			],
+		});
+
+		// Pin the shared assistant prefix while leaving the validity placeholder disposable.
+		const toolUse = payload.messages[1]?.content;
+		const resultBlocks = payload.messages[2]?.content;
+		expect(Array.isArray(toolUse) && toolUse[0]?.cache_control).toBeUndefined();
+		expect(Array.isArray(toolUse) && toolUse[1]?.cache_control).toEqual({ type: "ephemeral" });
+		expect(Array.isArray(resultBlocks) && resultBlocks.every((block) => !block.cache_control)).toBe(true);
+	});
+
 	it("preserves adaptive thinking and effort on a zero-token warmup", async () => {
 		const model: Model<"anthropic-messages"> = {
 			...makeModel(),

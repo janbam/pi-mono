@@ -156,6 +156,100 @@ describe("AgentSession prompt-cache warming", () => {
 		expect(session.systemPrompt).toBe(basePrompt);
 	});
 
+	it("allows maintenance during tool execution but rejects other active agent phases", async () => {
+		const model: Model<"anthropic-messages"> = {
+			id: "claude-cache-tool-test",
+			name: "Claude Cache Tool Test",
+			api: "anthropic-messages",
+			provider: "cache-tool-test-provider",
+			baseUrl: "https://cache-test.invalid",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 },
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		};
+		const { session, capture } = await createCapturedSession(model);
+		Reflect.set(session, "_isAgentRunActive", true);
+
+		await expect(session.warmPromptCache()).rejects.toThrow(
+			"Prompt cache can only be warmed while the session is idle or executing tools",
+		);
+
+		// A pending tool means the preceding provider response is complete and no foreground request is in flight.
+		const pendingToolCalls = Reflect.get(session.agent.state, "pendingToolCalls") as Set<string>;
+		pendingToolCalls.add("long-tool");
+		await session.warmPromptCache();
+
+		expect(capture.options).toMatchObject({ promptCacheWarmup: true });
+	});
+
+	it("drains hidden maintenance at the awaited boundary before a tool-loop continuation", async () => {
+		const model: Model<"anthropic-messages"> = {
+			id: "claude-cache-next-turn-test",
+			name: "Claude Cache Next Turn Test",
+			api: "anthropic-messages",
+			provider: "cache-next-turn-test-provider",
+			baseUrl: "https://cache-test.invalid",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 },
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		};
+		const { session } = await createCapturedSession(model);
+		let releaseBarrier: (() => void) | undefined;
+		const barrier = vi.fn(
+			async () =>
+				await new Promise<void>((resolve) => {
+					releaseBarrier = resolve;
+				}),
+		);
+		session.setBeforeProviderRequest(barrier);
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		};
+
+		let prepared = false;
+		const prepareNextTurn = session.agent.prepareNextTurnWithContext;
+		if (!prepareNextTurn) throw new Error("Expected AgentSession to install next-turn preparation");
+		const preparation = Promise.resolve(
+			prepareNextTurn({
+				message,
+				toolResults: [],
+				context: {
+					systemPrompt: session.systemPrompt,
+					messages: [message],
+					tools: session.agent.state.tools,
+				},
+				newMessages: [message],
+			}),
+		).then(() => {
+			prepared = true;
+		});
+
+		await vi.waitFor(() => expect(barrier).toHaveBeenCalledTimes(1));
+		expect(prepared).toBe(false);
+		// The continuation may advance only after the hidden request has fully drained.
+		releaseBarrier?.();
+		await preparation;
+		expect(barrier).toHaveBeenCalledTimes(1);
+	});
+
 	it("drains hidden provider work before unsummarized tree navigation moves the leaf", async () => {
 		const model: Model<"anthropic-messages"> = {
 			id: "claude-cache-tree-test",

@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed Claude cache warming stopping for the full duration of long-running tool calls. Maintenance now runs while tools are active and drains before the next model request.
 - Fixed `--system-prompt ""` silently falling back to the built-in coding prompt: an explicit empty string now produces an empty base prompt with appends, context files, and skills still applied. `--append-system-prompt ""` likewise disables appended prompts entirely, replacing `APPEND_SYSTEM.md` discovery.
 
 ## [0.84.2] - 2026-08-14
