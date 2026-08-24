@@ -353,6 +353,32 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--log-api-requests flag", () => {
+		test("parses --log-api-requests with a file path", () => {
+			const result = parseArgs(["--log-api-requests", "requests.jsonl"]);
+			expect(result.logApiRequests).toBe("requests.jsonl");
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("requires a file path", () => {
+			const result = parseArgs(["--log-api-requests"]);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--log-api-requests requires a file path" }]);
+		});
+
+		test("rejects an empty path", () => {
+			const result = parseArgs(["--log-api-requests", ""]);
+			expect(result.logApiRequests).toBeUndefined();
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--log-api-requests requires a file path" }]);
+		});
+
+		test("does not consume a following flag as the path", () => {
+			const result = parseArgs(["--log-api-requests", "--offline"]);
+			expect(result.logApiRequests).toBeUndefined();
+			expect(result.offline).toBe(true);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--log-api-requests requires a file path" }]);
+		});
+	});
+
 	describe("cache warming flag", () => {
 		test.each(["--keep-cache-warm", "-kw"])("parses %s", (flag) => {
 			const result = parseArgs([flag]);
