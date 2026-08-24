@@ -581,6 +581,8 @@ export class AgentSession {
 				? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
 				: undefined);
 		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
+			// Drain hidden maintenance before the loop can cross from completed tools into its next provider request.
+			await this._prepareProviderRequest();
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 			const previousContext = previousSnapshot?.context ?? turn.context;
 
@@ -1055,6 +1057,11 @@ export class AgentSession {
 		return !this._isAgentRunActive;
 	}
 
+	/** Whether hidden cache maintenance can run without overlapping foreground provider or compaction work. */
+	get canWarmPromptCache(): boolean {
+		return !this.isCompacting && (this.isIdle || this.agent.state.pendingToolCalls.size > 0);
+	}
+
 	/** Current effective system prompt (includes any per-turn extension modifications) */
 	get systemPrompt(): string {
 		return this.agent.state.systemPrompt;
@@ -1296,8 +1303,8 @@ export class AgentSession {
 		systemPrompt = this.agent.state.systemPrompt,
 		expiresAt?: number,
 	): Promise<PromptCacheWarmResult> {
-		if (!this.isIdle || this.isCompacting) {
-			throw new Error("Prompt cache can only be warmed while the session is idle");
+		if (!this.canWarmPromptCache) {
+			throw new Error("Prompt cache can only be warmed while the session is idle or executing tools");
 		}
 		const model = this.model;
 		if (!model || model.api !== "anthropic-messages") {

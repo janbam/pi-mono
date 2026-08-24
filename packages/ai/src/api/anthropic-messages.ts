@@ -1045,6 +1045,37 @@ function buildParams(
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const promptCacheWarmup = options?.promptCacheWarmup === true;
+	const maintenanceToolCallIds = new Set<string>();
+	let hasUnresolvedToolCalls = false;
+	if (promptCacheWarmup) {
+		// Walk completed results back to their assistant batch while ignoring the final maintenance input.
+		const completedToolCallIds = new Set<string>();
+		for (let index = context.messages.length - 2; index >= 0; index--) {
+			const message = context.messages[index];
+			if (message.role === "toolResult") {
+				completedToolCallIds.add(message.toolCallId);
+				continue;
+			}
+			if (message.role === "assistant") {
+				hasUnresolvedToolCalls = message.content.some(
+					(block) => block.type === "toolCall" && !completedToolCallIds.has(block.id),
+				);
+			}
+			break;
+		}
+	}
+	if (hasUnresolvedToolCalls) {
+		// Resolve the transformed batch IDs before synthetic results make the maintenance request protocol-valid.
+		for (let index = transformedMessages.length - 1; index >= 0; index--) {
+			const message = transformedMessages[index];
+			if (message.role !== "assistant") continue;
+			for (const block of message.content) {
+				if (block.type === "toolCall") maintenanceToolCallIds.add(block.id);
+			}
+			break;
+		}
+	}
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
 	const toolPlacement = splitDeferredTools(
 		{ ...context, messages: transformedMessages },
@@ -1067,7 +1098,8 @@ function buildParams(
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
-			options?.promptCacheWarmup === true,
+			promptCacheWarmup,
+			maintenanceToolCallIds,
 		),
 		// Most warmups are zero-token requests; budget thinking supplies its required one-token answer allowance.
 		max_tokens: options?.promptCacheWarmup ? (options.maxTokens ?? 0) : (options?.maxTokens ?? model.maxTokens),
@@ -1221,6 +1253,7 @@ function convertMessages(
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
 	promptCacheWarmup = false,
+	maintenanceToolCallIds: ReadonlySet<string> = new Set(),
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1356,17 +1389,18 @@ function convertMessages(
 
 	// Keep ordinary requests unchanged; maintenance requests cache the history before their synthetic final dot.
 	if (cacheControl && params.length > 0) {
-		applyConversationCacheControl(params, cacheControl, promptCacheWarmup);
+		applyConversationCacheControl(params, cacheControl, promptCacheWarmup, maintenanceToolCallIds);
 	}
 
 	return params;
 }
 
-/** Add the conversation cache breakpoint while keeping a warmup's synthetic suffix outside the cached prefix. */
+/** Add the conversation cache breakpoint while keeping a warmup's disposable protocol suffix outside the cached prefix. */
 function applyConversationCacheControl(
 	params: MessageParam[],
 	cacheControl: CacheControlEphemeral,
 	promptCacheWarmup: boolean,
+	maintenanceToolCallIds: ReadonlySet<string>,
 ): void {
 	if (!promptCacheWarmup) {
 		const message = params[params.length - 1];
@@ -1380,6 +1414,22 @@ function applyConversationCacheControl(
 			message.content[message.content.length - 1] = { ...block, cache_control: cacheControl };
 		}
 		return;
+	}
+	if (maintenanceToolCallIds.size > 0) {
+		// Cache the unresolved tool use shared by the real continuation, not its synthetic missing-result placeholder.
+		for (let messageIndex = params.length - 2; messageIndex >= 0; messageIndex--) {
+			const message = params[messageIndex];
+			if (message.role !== "assistant" || typeof message.content === "string") continue;
+			for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex--) {
+				const block = message.content[blockIndex];
+				if (block.type === "tool_use" && maintenanceToolCallIds.has(block.id)) {
+					message.content[blockIndex] = { ...block, cache_control: cacheControl };
+					return;
+				}
+			}
+		}
+		// Fail closed because falling through would cache the synthetic fork while reporting a successful refresh.
+		throw new Error("Prompt cache warmup could not locate its unresolved tool-use breakpoint");
 	}
 
 	// Walk backward from the message before the dot because the preceding history may end in any role.

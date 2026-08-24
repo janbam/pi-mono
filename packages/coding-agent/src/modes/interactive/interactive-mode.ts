@@ -3424,6 +3424,10 @@ export class InteractiveMode {
 				break;
 
 			case "tool_execution_start": {
+				if (this.session.state.pendingToolCalls.size === 1) {
+					// The first active tool opens one maintenance window for the whole sequential or parallel batch.
+					void this.cacheWarmController.resumeAfterForegroundRequest(this.turnCacheRefresh);
+				}
 				let component = this.pendingTools.get(event.toolCallId);
 				if (!component) {
 					component = new ToolExecutionComponent(

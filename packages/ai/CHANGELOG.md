@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added non-streaming Anthropic Messages prompt-cache maintenance requests with a cache breakpoint before the synthetic suffix. Thinking-disabled and adaptive-thinking warmups use zero output tokens; budget-based extended thinking preserves its configuration with a one-token answer allowance above the thinking budget.
+- Added non-streaming Anthropic Messages prompt-cache maintenance requests with a cache breakpoint before the synthetic suffix. During unresolved tool calls, the breakpoint remains on the tool-use prefix shared by the eventual real result. Thinking-disabled and adaptive-thinking warmups use zero output tokens; budget-based extended thinking preserves its configuration with a one-token answer allowance above the thinking budget.
 
 ## [0.84.2] - 2026-08-14
 

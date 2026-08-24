@@ -104,11 +104,13 @@ function makeMarker(options: {
 function makeSession(options: {
 	manager: SessionManager;
 	retention?: PromptCacheWarmResult["retention"];
+	canWarmPromptCache?: boolean;
+	isIdle?: boolean;
 	systemPrompt?: string;
 	getIdentity?: (systemPrompt: string) => string | undefined;
 	createSnapshot?: (systemPrompt: string) => PromptCacheSystemPromptSnapshot;
 	restoreSnapshot?: (snapshot: PromptCacheSystemPromptSnapshot) => string | undefined;
-	warm?: (signal?: AbortSignal, systemPrompt?: string) => Promise<PromptCacheWarmResult>;
+	warm?: (signal?: AbortSignal, systemPrompt?: string, expiresAt?: number) => Promise<PromptCacheWarmResult>;
 }): { session: AgentSession; warm: ReturnType<typeof vi.fn> } {
 	const retention = options.retention ?? "short";
 	const warm = vi.fn(
@@ -122,7 +124,8 @@ function makeSession(options: {
 	const session = {
 		model: makeModel(),
 		sessionManager: options.manager,
-		isIdle: true,
+		isIdle: options.isIdle ?? true,
+		canWarmPromptCache: options.canWarmPromptCache ?? true,
 		isCompacting: false,
 		systemPrompt: options.systemPrompt ?? BASE_PROMPT,
 		getPromptCacheIdentity: options.getIdentity ?? (() => "identity"),
@@ -187,6 +190,26 @@ describe("CacheWarmController", () => {
 		expect(markerEntry).toMatchObject({ type: "custom", customType: CACHE_WARM_MARKER_TYPE });
 		if (markerEntry?.type !== "custom") throw new Error("Expected cache warm marker");
 		expect(markerEntry.data).toMatchObject({ refreshCount: 3, totalCost: 0.025 });
+		await controller.dispose();
+	});
+
+	it("refreshes a proven foreground lease while a long-running tool is active", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-tool-execution-test");
+		const { session, warm } = makeSession({ manager, isIdle: false, canWarmPromptCache: true });
+		const controller = new CacheWarmController(session, { enabled: true });
+
+		await controller.pause();
+		await controller.resumeAfterForegroundRequest({
+			provider: "proxy",
+			model: "claude-test",
+			warmedAt: START_TIME,
+		});
+
+		// Keep the tool pending across the lease refresh boundary; the event loop remains available to maintenance.
+		await vi.advanceTimersByTimeAsync(SHORT_TTL_MS - WARM_LEAD_MS);
+
+		expect(warm).toHaveBeenCalledTimes(1);
+		expect(controller.getState()).toMatchObject({ idle: false, active: true, refreshCount: 1 });
 		await controller.dispose();
 	});
 

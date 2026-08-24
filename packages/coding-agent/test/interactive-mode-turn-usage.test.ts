@@ -157,6 +157,43 @@ describe("InteractiveMode turn usage", () => {
 		});
 	});
 
+	it("reopens cache maintenance with the latest foreground lease when tool execution starts", async () => {
+		const resumeAfterForegroundRequest = vi.fn().mockResolvedValue(undefined);
+		const markExecutionStarted = vi.fn();
+		const refresh = { provider: "test", model: "test", warmedAt: 1 };
+		const pendingToolCalls = new Set(["tool-1"]);
+		const context = {
+			isInitialized: true,
+			turnCacheRefresh: refresh,
+			footer: { invalidate: vi.fn() },
+			cacheWarmController: { resumeAfterForegroundRequest },
+			session: { state: { pendingToolCalls } },
+			pendingTools: new Map([["tool-1", { markExecutionStarted }]]),
+			ui: { requestRender: vi.fn() },
+		};
+
+		await handleEvent.call(context, {
+			type: "tool_execution_start",
+			toolCallId: "tool-1",
+			toolName: "long-tool",
+			args: {},
+		});
+
+		expect(resumeAfterForegroundRequest).toHaveBeenCalledWith(refresh);
+		expect(markExecutionStarted).toHaveBeenCalledTimes(1);
+
+		// Parallel siblings share the first tool's maintenance window instead of racing duplicate scheduler syncs.
+		pendingToolCalls.add("tool-2");
+		context.pendingTools.set("tool-2", { markExecutionStarted });
+		await handleEvent.call(context, {
+			type: "tool_execution_start",
+			toolCallId: "tool-2",
+			toolName: "second-long-tool",
+			args: {},
+		});
+		expect(resumeAfterForegroundRequest).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows a terminal cache miss without claiming that a retry is scheduled", () => {
 		const context: CacheWarmRenderContext = {
 			cacheWarmContainer: new Container(),
