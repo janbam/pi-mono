@@ -190,6 +190,70 @@ describe("CacheWarmController", () => {
 		await controller.dispose();
 	});
 
+	it("does not send a delayed refresh after the cache lease has expired", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-delayed-expiry-test");
+		const requestTime = START_TIME - 60_000;
+		const existingMarker = makeMarker({ warmedAt: requestTime });
+		manager.appendCustomEntry(CACHE_WARM_MARKER_TYPE, existingMarker);
+		const { session, warm } = makeSession({ manager });
+		const controller = new CacheWarmController(session, { enabled: true });
+
+		await controller.start();
+
+		// Simulate suspension across the scheduled refresh and the cache's hard expiry.
+		vi.setSystemTime(existingMarker.expiresAt + 1);
+		await vi.runOnlyPendingTimersAsync();
+
+		expect(warm).not.toHaveBeenCalled();
+		expect(controller.getState()).toMatchObject({
+			active: false,
+			cold: true,
+			retrying: false,
+			refreshCount: existingMarker.refreshCount,
+			totalCost: existingMarker.totalCost,
+		});
+
+		// A cold lease is terminal until a foreground request creates a new cache.
+		await vi.advanceTimersByTimeAsync(SHORT_TTL_MS);
+		expect(warm).not.toHaveBeenCalled();
+		await controller.dispose();
+	});
+
+	it("aborts asynchronous warmup preparation when the lease expires", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-preparation-expiry-test");
+		const requestTime = START_TIME - 60_000;
+		const existingMarker = makeMarker({ warmedAt: requestTime });
+		manager.appendCustomEntry(CACHE_WARM_MARKER_TYPE, existingMarker);
+		let providerDispatches = 0;
+		const { session, warm } = makeSession({
+			manager,
+			warm: async (signal) => {
+				// Hold request preparation until the proven cache lease has crossed its hard expiry.
+				await new Promise((resolve) => setTimeout(resolve, WARM_LEAD_MS + 1));
+				if (signal?.aborted) throw new Error("Cache lease expired during preparation");
+				providerDispatches++;
+				return { warmedAt: Date.now(), retention: "short", usage: makeUsage(0.005) };
+			},
+		});
+		const controller = new CacheWarmController(session, { enabled: true });
+
+		await controller.start();
+		const refreshDelay = existingMarker.expiresAt - WARM_LEAD_MS - START_TIME;
+		await vi.advanceTimersByTimeAsync(refreshDelay);
+		expect(warm).toHaveBeenCalledTimes(1);
+		expect(controller.getState().warming).toBe(true);
+
+		await vi.advanceTimersByTimeAsync(WARM_LEAD_MS + 1);
+
+		expect(providerDispatches).toBe(0);
+		expect(controller.getState()).toMatchObject({ active: false, cold: true, retrying: false, warming: false });
+
+		// Expiry cancellation is terminal; it must not enter the ordinary error retry loop.
+		await vi.advanceTimersByTimeAsync(SHORT_TTL_MS);
+		expect(warm).toHaveBeenCalledTimes(1);
+		await controller.dispose();
+	});
+
 	it("reconstructs an extension-modified prompt when resuming a still-warm lease", async () => {
 		const manager = SessionManager.inMemory("/tmp/cache-warm-resume-prompt-test");
 		const effectivePrompt = `${BASE_PROMPT}\n\nextension context`;
@@ -336,6 +400,15 @@ describe("CacheWarmController", () => {
 		manager.appendMessage(makeAssistant(assistantTime));
 		const { session, warm } = makeSession({ manager });
 		const controller = new CacheWarmController(session, { enabled: true });
+
+		await controller.start();
+		expect(controller.getState()).toMatchObject({
+			active: false,
+			cold: true,
+			refreshCount: 2,
+			totalCost: 0.123,
+		});
+		expect(warm).not.toHaveBeenCalled();
 
 		await controller.pause();
 		await controller.resumeAfterForegroundRequest({

@@ -148,9 +148,11 @@ describe("AgentSession prompt-cache warming", () => {
 		expect(restoredPrompt).toBe(effectivePrompt);
 		expect(session.getPromptCacheIdentity(restoredPrompt)).toBe(effectiveIdentity);
 		expect(session.restorePromptCacheSystemPrompt({ ...snapshot, baseHash: "changed-base" })).toBeUndefined();
-		await session.warmPromptCache(undefined, restoredPrompt);
+		const expiresAt = 5_000;
+		await session.warmPromptCache(undefined, restoredPrompt, expiresAt);
 
 		expect(capture.context?.systemPrompt).toBe(effectivePrompt);
+		expect(capture.options?.promptCacheWarmupExpiresAt).toBe(expiresAt);
 		expect(session.systemPrompt).toBe(basePrompt);
 	});
 

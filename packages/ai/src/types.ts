@@ -195,6 +195,11 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 */
 	promptCacheWarmup?: boolean;
 	/**
+	 * Absolute Unix timestamp in milliseconds after which an Anthropic prompt-cache
+	 * maintenance request must not begin a provider attempt. Ignored for ordinary requests.
+	 */
+	promptCacheWarmupExpiresAt?: number;
+	/**
 	 * Preferred transport for providers that support multiple transports.
 	 * Providers that do not support this option ignore it.
 	 */

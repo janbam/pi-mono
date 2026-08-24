@@ -36,6 +36,7 @@ export function buildBaseOptions(
 			? (options.maxTokens ?? 0)
 			: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
 		promptCacheWarmup: options?.promptCacheWarmup,
+		promptCacheWarmupExpiresAt: options?.promptCacheWarmupExpiresAt,
 		signal: options?.signal,
 		telemetryContext: options?.telemetryContext,
 		apiKey: apiKey || options?.apiKey,
