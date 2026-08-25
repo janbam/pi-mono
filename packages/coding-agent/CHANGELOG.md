@@ -12,6 +12,10 @@
 - Added opt-in Claude prompt-cache warming for all `anthropic-messages` models with `--keep-cache-warm`/`-kw`, `/warm`, verified active-branch lease recovery across resumed sessions, exact foreground prompt/thinking reuse, and an idle duration/cost display. Maintenance starts only after a successful foreground request establishes a cache lease.
 - Added foreground agent-run usage summaries with uncached input, output, cache reads, cache writes, and total cost; compaction and branch-summary usage remains separate.
 
+### Changed
+
+- Changed `/tree` navigation: `enter` now navigates to the selected entry directly without a summary prompt; `tab` navigates and opens the branch summary menu. The `branchSummary.skipPrompt` setting no longer has an effect.
+
 ### Fixed
 
 - Fixed Claude cache warming across interactive state changes: `/warm on` now adopts a cache already warmed by the latest foreground request, and Escape-to-pause keeps maintenance running and visible while the pause drains through tools and remains held.

@@ -132,7 +132,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `branchSummary.reserveTokens` | number | `16384` | Tokens reserved for branch summarization |
-| `branchSummary.skipPrompt` | boolean | `false` | Skip "Summarize branch?" prompt on `/tree` navigation (defaults to no summary) |
+| `branchSummary.skipPrompt` | boolean | `false` | Obsolete: `enter` in `/tree` always navigates without a summary prompt; use `ctrl+enter` to open the summary menu. This setting no longer has an effect. |
 
 ### Retry
 

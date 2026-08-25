@@ -700,3 +700,40 @@ describe("TreeSelectorComponent", () => {
 		});
 	});
 });
+
+describe("confirm with and without summary menu", () => {
+	const buildTwoEntryTree = () =>
+		buildTree([userMessage("user-1", null, "hello"), assistantMessage("asst-1", "user-1", "hi")]);
+
+	test("plain enter confirms without opening the summary menu", () => {
+		const calls: Array<{ entryId: string; showSummaryMenu: boolean }> = [];
+		const selector = new TreeSelectorComponent(
+			buildTwoEntryTree(),
+			"asst-1",
+			24,
+			(entryId, showSummaryMenu) => calls.push({ entryId, showSummaryMenu }),
+			() => {},
+		);
+		selector.handleInput("\x1b[A"); // up: asst-1 → user-1
+
+		selector.handleInput("\r");
+
+		expect(calls).toEqual([{ entryId: "user-1", showSummaryMenu: false }]);
+	});
+
+	test("tab confirms and requests the summary menu", () => {
+		const calls: Array<{ entryId: string; showSummaryMenu: boolean }> = [];
+		const selector = new TreeSelectorComponent(
+			buildTwoEntryTree(),
+			"asst-1",
+			24,
+			(entryId, showSummaryMenu) => calls.push({ entryId, showSummaryMenu }),
+			() => {},
+		);
+		selector.handleInput("\x1b[A"); // up: asst-1 → user-1
+
+		selector.handleInput("\t");
+
+		expect(calls).toEqual([{ entryId: "user-1", showSummaryMenu: true }]);
+	});
+});
