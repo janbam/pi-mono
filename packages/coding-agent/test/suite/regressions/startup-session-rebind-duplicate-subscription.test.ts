@@ -3,11 +3,16 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 
 type RebindContext = {
 	session: { setBeforeProviderRequest: (callback: () => void | Promise<void>) => void };
-	cacheWarmController: { pause: () => Promise<void>; rebind: (session: RebindContext["session"]) => Promise<void> };
+	cacheWarmController: {
+		pause: () => Promise<void>;
+		rebind: (session: RebindContext["session"], options?: { resume?: boolean }) => Promise<void>;
+		resume: () => Promise<void>;
+	};
 	unsubscribe?: () => void;
 	applyRuntimeSettings: () => void;
 	renderCurrentSessionState: () => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
+	bindCacheWarmSessionHooks: () => void;
 	subscribeToAgent: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
@@ -41,13 +46,14 @@ describe("overlapping startup and replacement session rebinds", () => {
 
 		const context: RebindContext = {
 			session: startupSession,
-			cacheWarmController: { pause: async () => {}, rebind: async () => {} },
+			cacheWarmController: { pause: async () => {}, rebind: async () => {}, resume: async () => {} },
 			applyRuntimeSettings: () => {},
 			renderCurrentSessionState: () => {},
 			bindCurrentSessionExtensions: () => {
 				bindCount += 1;
 				return bindCount === 1 ? startupBind : replacementBind;
 			},
+			bindCacheWarmSessionHooks: () => {},
 			subscribeToAgent,
 			updateAvailableProviderCount: async () => {},
 			updateEditorBorderColor: () => {},
@@ -55,14 +61,14 @@ describe("overlapping startup and replacement session rebinds", () => {
 		};
 
 		const startupRebind = interactiveModePrototype.rebindCurrentSession.call(context);
-		expect(bindCount).toBe(1);
+		await vi.waitFor(() => expect(bindCount).toBe(1));
 
 		context.session = replacementSession;
 		const replacementRebind = interactiveModePrototype.rebindCurrentSession.call(context, {
 			renderBeforeBind: true,
 		});
 
-		expect(bindCount).toBe(2);
+		await vi.waitFor(() => expect(bindCount).toBe(2));
 		expect(subscribeToAgent).toHaveBeenCalledTimes(1);
 
 		resolveStartupBind();

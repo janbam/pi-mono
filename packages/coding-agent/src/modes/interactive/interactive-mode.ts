@@ -56,7 +56,12 @@ import {
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type ForegroundPromptCacheRequest,
+	parseSkillBlock,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import {
 	CACHE_TTL_MS,
@@ -214,6 +219,9 @@ type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
 };
+
+/** Request-bound cache provenance plus the controller generation active when it was sent. */
+type ForegroundCacheRequest = ForegroundPromptCacheRequest & { generation: number };
 
 type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" }>;
 
@@ -540,6 +548,7 @@ export class InteractiveMode {
 	private cacheWarmController: CacheWarmController;
 	private turnUsage: UsageTotals | undefined;
 	private turnCacheRefresh: ForegroundCacheRefresh | undefined;
+	private foregroundCacheRequest: ForegroundCacheRequest | undefined;
 
 	// Custom footer from extension (undefined = use built-in footer)
 	private customFooter: (Component & { dispose?(): void }) | undefined = undefined;
@@ -628,7 +637,7 @@ export class InteractiveMode {
 			onStateChange: (state) => this.renderCacheWarmState(state),
 			onError: (message) => this.showWarning(`Cache warming failed: ${message}`),
 		});
-		this.session.setBeforeProviderRequest(() => this.cacheWarmController.pause());
+		this.bindCacheWarmSessionHooks();
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -1991,6 +2000,18 @@ export class InteractiveMode {
 		}
 	}
 
+	/** Bind maintenance draining and request-bound cache provenance to the current session. */
+	private bindCacheWarmSessionHooks(): void {
+		this.session.setBeforeProviderRequest(() => this.cacheWarmController.pause());
+		this.session.setForegroundPromptCacheRequestListener((request) => {
+			// Stamp invalidation state at the same boundary as the immutable provider context.
+			this.foregroundCacheRequest = {
+				...request,
+				generation: this.cacheWarmController.getForegroundRefreshGeneration(),
+			};
+		});
+	}
+
 	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
 		const session = this.session;
 
@@ -2003,6 +2024,9 @@ export class InteractiveMode {
 			this.subscribeToAgent();
 		}
 
+		// Bind the new lifecycle before session_start handlers can issue foreground requests.
+		await this.cacheWarmController.rebind(session, { resume: false });
+		this.bindCacheWarmSessionHooks();
 		await this.bindCurrentSessionExtensions();
 
 		if (this.session !== session) {
@@ -2014,8 +2038,7 @@ export class InteractiveMode {
 		}
 
 		await this.updateAvailableProviderCount();
-		this.session.setBeforeProviderRequest(() => this.cacheWarmController.pause());
-		await this.cacheWarmController.rebind(this.session);
+		await this.cacheWarmController.resume();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	}
@@ -3360,7 +3383,10 @@ export class InteractiveMode {
 				}
 				break;
 
-			case "message_end":
+			case "message_end": {
+				// Nested custom messages must not consume the provenance awaiting its assistant response.
+				const foregroundRequest = event.message.role === "assistant" ? this.foregroundCacheRequest : undefined;
+				if (event.message.role === "assistant") this.foregroundCacheRequest = undefined;
 				if (event.message.role === "user") break;
 				if (this.turnUsage) {
 					if (event.message.role === "assistant") {
@@ -3369,11 +3395,17 @@ export class InteractiveMode {
 							event.message.api === "anthropic-messages" &&
 							event.message.stopReason !== "error" &&
 							event.message.stopReason !== "aborted" &&
-							hasPromptCacheActivity(event.message.usage)
+							hasPromptCacheActivity(event.message.usage) &&
+							foregroundRequest?.provider === event.message.provider &&
+							foregroundRequest.model === event.message.model &&
+							foregroundRequest.cacheIdentity
 						) {
 							this.turnCacheRefresh = {
-								provider: event.message.provider,
-								model: event.message.model,
+								provider: foregroundRequest.provider,
+								model: foregroundRequest.model,
+								cacheIdentity: foregroundRequest.cacheIdentity,
+								leafId: foregroundRequest.leafId,
+								generation: foregroundRequest.generation,
 								warmedAt: event.message.timestamp,
 							};
 						}
@@ -3418,6 +3450,7 @@ export class InteractiveMode {
 				}
 				this.ui.requestRender();
 				break;
+			}
 
 			case "bash_execution_update":
 				// The bash execution callback handles TUI output rendering.
@@ -3486,8 +3519,10 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled": {
+				// Preserve the message-bound proof while a parked pause continuation advances the session.
 				const cacheRefresh = this.turnCacheRefresh;
 				this.turnCacheRefresh = undefined;
+				this.foregroundCacheRequest = undefined;
 				this.showTurnUsage();
 				await this.handlePauseSettled();
 				await this.checkShutdownRequested();

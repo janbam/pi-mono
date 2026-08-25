@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed Claude cache warming across interactive state changes: `/warm on` now adopts a cache already warmed by the latest foreground request, and Escape-to-pause keeps maintenance running and visible while the pause drains through tools and remains held.
 - Fixed Claude cache warming stopping for the full duration of long-running tool calls. Maintenance now runs while tools are active and drains before the next model request.
 - Fixed `--system-prompt ""` silently falling back to the built-in coding prompt: an explicit empty string now produces an empty base prompt with appends, context files, and skills still applied. `--append-system-prompt ""` likewise disables appended prompts entirely, replacing `APPEND_SYSTEM.md` discovery.
 
