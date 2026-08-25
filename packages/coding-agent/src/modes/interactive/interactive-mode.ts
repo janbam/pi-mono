@@ -5289,7 +5289,7 @@ export class InteractiveMode {
 				tree,
 				realLeafId,
 				this.ui.terminal.rows,
-				async (entryId) => {
+				async (entryId: string, showSummaryMenu: boolean) => {
 					// Selecting the current leaf is a no-op (already there)
 					if (entryId === this.sessionManager.getLeafId()) {
 						done();
@@ -5297,15 +5297,14 @@ export class InteractiveMode {
 						return;
 					}
 
-					// Ask about summarization
+					// Plain enter navigates without a summary; tab explicitly opens the summary menu.
 					done(); // Close selector first
 
-					// Loop until user makes a complete choice or cancels to tree
 					let wantsSummary = false;
 					let customInstructions: string | undefined;
 
-					// Check if we should skip the prompt (user preference to always default to no summary)
-					if (!this.settingsManager.getBranchSummarySkipPrompt()) {
+					if (showSummaryMenu) {
+						// Loop until user makes a complete choice or cancels back to tree
 						while (true) {
 							const summaryChoice = await this.showExtensionSelector("Summarize branch?", [
 								"No summary",

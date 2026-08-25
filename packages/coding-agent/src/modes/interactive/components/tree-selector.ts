@@ -121,7 +121,12 @@ class TreeList implements Component {
 	private lastSelectedId: string | null = null;
 	private foldedNodes: Set<string> = new Set();
 
-	public onSelect?: (entryId: string) => void;
+	/**
+	 * Called when the user confirms a navigation target.
+	 * `showSummaryMenu` is true only for the dedicated summary-menu binding (tab);
+	 * plain confirm navigates without a summary.
+	 */
+	public onSelect?: (entryId: string, showSummaryMenu: boolean) => void;
 	public onCancel?: () => void;
 	public onCopy?: (text: string | undefined) => void;
 	public onLabelEdit?: (entryId: string, currentLabel: string | undefined) => void;
@@ -1023,10 +1028,16 @@ class TreeList implements Component {
 		} else if (kb.matches(keyData, "tui.editor.cursorRight") || kb.matches(keyData, "tui.select.pageDown")) {
 			// Page down
 			this.selectedIndex = Math.min(this.filteredNodes.length - 1, this.selectedIndex + this.maxVisibleLines);
+		} else if (kb.matches(keyData, "app.tree.confirmSummaryMenu")) {
+			const selected = this.filteredNodes[this.selectedIndex];
+			if (selected && this.onSelect) {
+				this.onSelect(selected.node.entry.id, true);
+			}
 		} else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selected = this.filteredNodes[this.selectedIndex];
 			if (selected && this.onSelect) {
-				this.onSelect(selected.node.entry.id);
+				// Plain confirm navigates directly; no summary prompt.
+				this.onSelect(selected.node.entry.id, false);
 			}
 		} else if (kb.matches(keyData, "app.message.copy")) {
 			this.copySelected();
@@ -1217,6 +1228,8 @@ class TreeHelp implements Component {
 }
 
 const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: boolean }> = [
+	{ keys: ["tui.select.confirm"], label: "go" },
+	{ keys: ["app.tree.confirmSummaryMenu"], label: "go+summary" },
 	{ keys: ["tui.select.up", "tui.select.down"], label: "move" },
 	{ keys: ["tui.editor.cursorLeft", "tui.editor.cursorRight"], label: "page" },
 	{ keys: ["app.tree.foldOrUp", "app.tree.unfoldOrDown"], label: "branch" },
@@ -1352,7 +1365,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		tree: SessionTreeNode[],
 		currentLeafId: string | null,
 		terminalHeight: number,
-		onSelect: (entryId: string) => void,
+		onSelect: (entryId: string, showSummaryMenu: boolean) => void,
 		onCancel: () => void,
 		onLabelChange?: (entryId: string, label: string | undefined) => void,
 		initialSelectedId?: string,

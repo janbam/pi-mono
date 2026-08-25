@@ -35,6 +35,7 @@ export interface AppKeybindings {
 	"app.session.resume": true;
 	"app.tree.foldOrUp": true;
 	"app.tree.unfoldOrDown": true;
+	"app.tree.confirmSummaryMenu": true;
 	"app.tree.editLabel": true;
 	"app.tree.toggleLabelTimestamp": true;
 	"app.session.togglePath": true;
@@ -138,6 +139,10 @@ export const KEYBINDINGS = {
 	"app.tree.unfoldOrDown": {
 		defaultKeys: process.platform === "darwin" ? ["alt+right", "ctrl+right"] : ["ctrl+right", "alt+right"],
 		description: "Unfold tree branch or move down",
+	},
+	"app.tree.confirmSummaryMenu": {
+		defaultKeys: "tab",
+		description: "Navigate to selected entry and open the branch summary menu",
 	},
 	"app.tree.editLabel": {
 		defaultKeys: "shift+l",

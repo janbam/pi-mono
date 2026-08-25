@@ -135,6 +135,7 @@ This routing remains configurable through the ordinary action bindings. For exam
 |--------|---------|-------------|
 | `app.session.new` | *(none)* | Start a new session (`/new`) |
 | `app.session.tree` | *(none)* | Open session tree navigator (`/tree`) |
+| `app.tree.confirmSummaryMenu` | `tab` | In `/tree`, navigate to the selected entry and open the branch summary menu (plain `enter` navigates without a summary) |
 | `app.session.fork` | *(none)* | Fork current session (`/fork`) |
 | `app.session.resume` | *(none)* | Open session resume picker (`/resume`) |
 | `app.session.togglePath` | `ctrl+p` | Toggle path display |

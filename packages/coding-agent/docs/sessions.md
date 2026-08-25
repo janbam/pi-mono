@@ -130,7 +130,7 @@ Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone`
 
 When `/tree` switches away from one branch to another, pi can summarize the abandoned branch and attach that summary at the new position. This preserves important context from the path you left without replaying the whole branch.
 
-When prompted, choose one of:
+Press `enter` on a tree entry to navigate there directly without a summary. Press `tab` to navigate and choose a summarization mode:
 
 1. no summary
 2. summarize with the default prompt
