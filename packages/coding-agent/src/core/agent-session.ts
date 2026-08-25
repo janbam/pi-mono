@@ -26,6 +26,7 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	PrepareNextTurnContext,
+	StreamFn,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
@@ -38,6 +39,8 @@ import type {
 	Model,
 	ProviderHeaders,
 	TextContent,
+	ThinkingBudgets,
+	Tool,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
 import {
@@ -129,6 +132,14 @@ export interface ParsedSkillBlock {
 	location: string;
 	content: string;
 	userMessage: string | undefined;
+}
+
+/** Immutable cache provenance captured from the exact foreground provider request. */
+export interface ForegroundPromptCacheRequest {
+	provider: string;
+	model: string;
+	cacheIdentity: string | undefined;
+	leafId: string | null;
 }
 
 /**
@@ -352,6 +363,9 @@ export class AgentSession {
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 	private _beforeProviderRequest?: () => void | Promise<void>;
+	private _foregroundPromptCacheRequestListener?: (request: ForegroundPromptCacheRequest) => void;
+	private _foregroundProviderStreamFunction: StreamFn | undefined;
+	private _wrappedStreamFunctionUsesDefault = false;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -430,7 +444,6 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
-
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
@@ -491,7 +504,11 @@ export class AgentSession {
 		headers?: Record<string, string>;
 		env?: Record<string, string>;
 	}> {
-		if (this.agent.streamFunction === streamSimple) {
+		const usesDefaultStreamFunction =
+			this.agent.streamFunction === this._foregroundProviderStreamFunction
+				? this._wrappedStreamFunctionUsesDefault
+				: this.agent.streamFunction === streamSimple;
+		if (usesDefaultStreamFunction) {
 			return this._getRequiredRequestAuth(model);
 		}
 
@@ -597,6 +614,33 @@ export class AgentSession {
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
 		};
+	}
+
+	/** Observe the immutable provider context before later extension hooks can mutate session state. */
+	private _installForegroundProviderRequestHook(): void {
+		if (this.agent.streamFunction === this._foregroundProviderStreamFunction) return;
+		const streamFunction = this.agent.streamFunction;
+		this._wrappedStreamFunctionUsesDefault = streamFunction === streamSimple;
+		const foregroundProviderStreamFunction: StreamFn = (model, context, options) => {
+			// Hidden maintenance shares this stream function but must never masquerade as foreground proof.
+			if (this._isAgentRunActive && options?.promptCacheWarmup !== true) {
+				this._foregroundPromptCacheRequestListener?.({
+					provider: model.provider,
+					model: model.id,
+					cacheIdentity: this._createPromptCacheIdentity(
+						model,
+						context.systemPrompt,
+						options?.reasoning ?? "off",
+						options?.thinkingBudgets,
+						context.tools,
+					),
+					leafId: this.sessionManager.getLeafId(),
+				});
+			}
+			return streamFunction(model, context, options);
+		};
+		this._foregroundProviderStreamFunction = foregroundProviderStreamFunction;
+		this.agent.streamFunction = foregroundProviderStreamFunction;
 	}
 
 	// =========================================================================
@@ -992,6 +1036,14 @@ export class AgentSession {
 		this._beforeProviderRequest = hook;
 	}
 
+	/** Observe the exact foreground request dimensions used to establish prompt-cache state. */
+	setForegroundPromptCacheRequestListener(
+		listener: ((request: ForegroundPromptCacheRequest) => void) | undefined,
+	): void {
+		this._foregroundPromptCacheRequestListener = listener;
+		if (listener) this._installForegroundProviderRequestHook();
+	}
+
 	/** Drain app-owned background provider work before this session uses the same provider runtime. */
 	private async _prepareProviderRequest(): Promise<void> {
 		await this._beforeProviderRequest?.();
@@ -1025,6 +1077,7 @@ export class AgentSession {
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		this._foregroundPromptCacheRequestListener = undefined;
 		cleanupSessionResources(this.sessionId);
 	}
 
@@ -1233,9 +1286,25 @@ export class AgentSession {
 
 	/** Stable identity for the cache-relevant model, effective prompt, thinking configuration, and tools. */
 	getPromptCacheIdentity(systemPrompt = this.agent.state.systemPrompt): string | undefined {
-		const model = this.model;
+		return this._createPromptCacheIdentity(
+			this.model,
+			systemPrompt,
+			this.thinkingLevel,
+			this.agent.thinkingBudgets,
+			this.agent.state.tools,
+		);
+	}
+
+	/** Hash the exact cache-bearing request dimensions shared by foreground and maintenance requests. */
+	private _createPromptCacheIdentity(
+		model: Model<any> | undefined,
+		systemPrompt: string | undefined,
+		thinkingLevel: ThinkingLevel,
+		thinkingBudgets: ThinkingBudgets | undefined,
+		tools: Tool[] | undefined,
+	): string | undefined {
 		if (!model || model.api !== "anthropic-messages") return undefined;
-		const cacheRelevantTools = this.agent.state.tools.map((tool) => ({
+		const cacheRelevantTools = (tools ?? []).map((tool) => ({
 			name: tool.name,
 			description: tool.description,
 			parameters: tool.parameters,
@@ -1248,8 +1317,8 @@ export class AgentSession {
 					provider: model.provider,
 					model: model.id,
 					systemPrompt,
-					thinkingLevel: this.thinkingLevel,
-					thinkingBudgets: this.agent.thinkingBudgets,
+					thinkingLevel,
+					thinkingBudgets,
 					tools: cacheRelevantTools,
 				}),
 			)

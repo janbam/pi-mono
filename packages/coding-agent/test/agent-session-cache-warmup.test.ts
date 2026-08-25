@@ -18,6 +18,7 @@ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils
 interface WarmRequestCapture {
 	context?: Context;
 	options?: SimpleStreamOptions;
+	onRequest?: () => void;
 }
 
 describe("AgentSession prompt-cache warming", () => {
@@ -51,6 +52,7 @@ describe("AgentSession prompt-cache warming", () => {
 			streamSimple: (_model, context, options) => {
 				capture.context = context;
 				capture.options = options;
+				capture.onRequest?.();
 				const stream = createAssistantMessageEventStream();
 				const response: AssistantMessage = {
 					role: "assistant",
@@ -85,6 +87,40 @@ describe("AgentSession prompt-cache warming", () => {
 		});
 		return { session, capture };
 	}
+
+	it("captures cache provenance from the provider request before later session mutation", async () => {
+		const model: Model<"anthropic-messages"> = {
+			id: "claude-cache-provenance-test",
+			name: "Claude Cache Provenance Test",
+			api: "anthropic-messages",
+			provider: "cache-provenance-test-provider",
+			baseUrl: "https://cache-test.invalid",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 1.25 },
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		};
+		const { session, capture } = await createCapturedSession(model);
+		const requestIdentity = session.getPromptCacheIdentity();
+		const listener = vi.fn();
+		session.setForegroundPromptCacheRequestListener(listener);
+		capture.onRequest = () => {
+			// Simulate an extension changing cache-bearing state after the request has crossed the provider boundary.
+			session.agent.state.systemPrompt = `${session.systemPrompt}\nchanged after request`;
+		};
+
+		await session.prompt("hello");
+
+		expect(listener).toHaveBeenCalledOnce();
+		expect(listener).toHaveBeenCalledWith({
+			provider: model.provider,
+			model: model.id,
+			cacheIdentity: requestIdentity,
+			leafId: expect.any(String),
+		});
+		expect(session.getPromptCacheIdentity()).not.toBe(requestIdentity);
+	});
 
 	it("uses a zero-token private dot when thinking is disabled without changing session state", async () => {
 		const model: Model<"anthropic-messages"> = {

@@ -9,6 +9,8 @@ import {
 	CACHE_WARM_MARKER_TYPE,
 	CacheWarmController,
 	type CacheWarmMarker,
+	type ForegroundCacheRefresh,
+	isCacheWarmEntry,
 	omitCacheWarmEntries,
 } from "../src/core/cache-warmup.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -75,15 +77,34 @@ function makeAssistant(timestamp: number): AssistantMessage {
 	};
 }
 
+/** Create a complete foreground cache proof at the manager's currently selected leaf. */
+function makeForegroundRefresh(
+	manager: SessionManager,
+	warmedAt: number,
+	overrides: Partial<Omit<ForegroundCacheRefresh, "warmedAt">> = {},
+): ForegroundCacheRefresh {
+	return {
+		provider: "proxy",
+		model: "claude-test",
+		cacheIdentity: "identity",
+		leafId: manager.getLeafId(),
+		generation: 0,
+		warmedAt,
+		...overrides,
+	};
+}
+
 function makeMarker(options: {
 	warmedAt: number;
 	retention?: PromptCacheWarmResult["retention"];
 	totalCost?: number;
 	cacheIdentity?: string;
 	systemPrompt?: PromptCacheSystemPromptSnapshot;
+	cacheActive?: boolean;
 }): CacheWarmMarker {
 	const retention = options.retention ?? "short";
 	const ttl = retention === "long" ? LONG_TTL_MS : SHORT_TTL_MS;
+	const cacheActive = options.cacheActive ?? true;
 	return {
 		version: 1,
 		api: "anthropic-messages",
@@ -91,10 +112,10 @@ function makeMarker(options: {
 		model: "claude-test",
 		cacheIdentity: options.cacheIdentity ?? "identity",
 		systemPrompt: options.systemPrompt ?? BASE_PROMPT_SNAPSHOT,
-		cacheActive: true,
+		cacheActive,
 		retention,
 		warmedAt: options.warmedAt,
-		expiresAt: options.warmedAt + ttl,
+		expiresAt: cacheActive ? options.warmedAt + ttl : options.warmedAt,
 		warmSince: options.warmedAt - 60_000,
 		refreshCount: 2,
 		totalCost: options.totalCost ?? 0.02,
@@ -106,6 +127,7 @@ function makeSession(options: {
 	retention?: PromptCacheWarmResult["retention"];
 	canWarmPromptCache?: boolean;
 	isIdle?: boolean;
+	isPauseRequested?: boolean;
 	systemPrompt?: string;
 	getIdentity?: (systemPrompt: string) => string | undefined;
 	createSnapshot?: (systemPrompt: string) => PromptCacheSystemPromptSnapshot;
@@ -125,6 +147,7 @@ function makeSession(options: {
 		model: makeModel(),
 		sessionManager: options.manager,
 		isIdle: options.isIdle ?? true,
+		isPauseRequested: options.isPauseRequested ?? false,
 		canWarmPromptCache: options.canWarmPromptCache ?? true,
 		isCompacting: false,
 		systemPrompt: options.systemPrompt ?? BASE_PROMPT,
@@ -164,6 +187,103 @@ describe("CacheWarmController", () => {
 		await controller.dispose();
 	});
 
+	it("adopts a foreground-warmed lease when warming is enabled after the turn", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-interactive-enable-test");
+		const foregroundWarmedAt = START_TIME - 30_000;
+		manager.appendMessage(makeAssistant(foregroundWarmedAt));
+		const { session, warm } = makeSession({ manager });
+		const controller = new CacheWarmController(session, { enabled: false });
+
+		await controller.start();
+		await controller.pause();
+		await controller.resumeAfterForegroundRequest(makeForegroundRefresh(manager, foregroundWarmedAt));
+
+		// Warming stays inert while disabled, but the foreground cache proof must survive a later interactive opt-in.
+		expect(manager.getBranch().some(isCacheWarmEntry)).toBe(false);
+		expect(controller.getState()).toMatchObject({ enabled: false, active: false });
+
+		await controller.setEnabled(true);
+
+		expect(controller.getState()).toMatchObject({
+			enabled: true,
+			active: true,
+			warmSince: foregroundWarmedAt,
+			refreshCount: 0,
+			totalCost: 0,
+		});
+		expect(manager.getBranch().at(-1)).toMatchObject({
+			type: "custom",
+			customType: CACHE_WARM_MARKER_TYPE,
+			data: { warmedAt: foregroundWarmedAt, warmSince: foregroundWarmedAt },
+		});
+
+		// The adopted lease schedules maintenance against its original provider expiry, not a fictitious new TTL.
+		await vi.advanceTimersByTimeAsync(foregroundWarmedAt + SHORT_TTL_MS - WARM_LEAD_MS - START_TIME);
+		expect(warm).toHaveBeenCalledTimes(1);
+		await controller.dispose();
+	});
+
+	it("does not carry a disabled foreground lease onto a sibling branch", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-interactive-enable-branch-test");
+		const rootId = manager.appendMessage({ role: "user", content: "root", timestamp: START_TIME - 120_000 });
+		manager.appendMessage({ role: "user", content: "branch A", timestamp: START_TIME - 60_000 });
+		manager.appendMessage(makeAssistant(START_TIME - 30_000));
+		const { session, warm } = makeSession({ manager });
+		const controller = new CacheWarmController(session, { enabled: false });
+
+		await controller.start();
+		await controller.resumeAfterForegroundRequest(makeForegroundRefresh(manager, START_TIME - 30_000));
+
+		// Move the selected leaf away from the response that proved the provider cache was warm.
+		manager.branch(rootId);
+		manager.appendMessage({ role: "user", content: "branch B", timestamp: START_TIME - 10_000 });
+		await controller.setEnabled(true);
+
+		expect(controller.getState()).toMatchObject({ enabled: true, active: false, cold: false });
+		expect(manager.getBranch().some(isCacheWarmEntry)).toBe(false);
+		expect(warm).not.toHaveBeenCalled();
+		await controller.dispose();
+	});
+
+	it("keeps the newest foreground proof when pause continuations settle out of order", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-out-of-order-settle-test");
+		manager.appendMessage({ role: "user", content: "turn A", timestamp: START_TIME - 60_000 });
+		const turnARefresh = makeForegroundRefresh(manager, START_TIME - 30_000);
+		manager.appendMessage({ role: "user", content: "turn B", timestamp: START_TIME - 20_000 });
+		const turnBRefresh = makeForegroundRefresh(manager, START_TIME - 10_000);
+		const { session } = makeSession({ manager });
+		const controller = new CacheWarmController(session, { enabled: false });
+
+		await controller.start();
+		// Turn B's listener may finish before the older turn A listener that launched it.
+		await controller.resumeAfterForegroundRequest(turnBRefresh);
+		await controller.resumeAfterForegroundRequest(turnARefresh);
+		await controller.setEnabled(true);
+
+		expect(controller.getState()).toMatchObject({ active: true, warmSince: turnBRefresh.warmedAt });
+		expect(manager.getBranch().at(-1)).toMatchObject({ data: { warmedAt: turnBRefresh.warmedAt } });
+		await controller.dispose();
+	});
+
+	it("rejects a retained foreground proof after the prompt cache identity changes", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-retained-identity-test");
+		manager.appendMessage(makeAssistant(START_TIME - 30_000));
+		let cacheIdentity = "identity";
+		const { session, warm } = makeSession({ manager, getIdentity: () => cacheIdentity });
+		const controller = new CacheWarmController(session, { enabled: false });
+
+		await controller.start();
+		await controller.resumeAfterForegroundRequest(makeForegroundRefresh(manager, START_TIME - 30_000));
+		// Extensions can change active tools while warming is disabled without calling controller.invalidate().
+		cacheIdentity = "changed-identity";
+		await controller.setEnabled(true);
+
+		expect(controller.getState()).toMatchObject({ enabled: true, active: false, cold: false });
+		expect(manager.getBranch().some(isCacheWarmEntry)).toBe(false);
+		expect(warm).not.toHaveBeenCalled();
+		await controller.dispose();
+	});
+
 	it("resumes a still-warm short lease and refreshes it ten seconds before expiry", async () => {
 		const manager = SessionManager.inMemory("/tmp/cache-warm-test");
 		const requestTime = START_TIME - 60_000;
@@ -199,17 +319,34 @@ describe("CacheWarmController", () => {
 		const controller = new CacheWarmController(session, { enabled: true });
 
 		await controller.pause();
-		await controller.resumeAfterForegroundRequest({
-			provider: "proxy",
-			model: "claude-test",
-			warmedAt: START_TIME,
-		});
+		await controller.resumeAfterForegroundRequest(makeForegroundRefresh(manager, START_TIME));
 
 		// Keep the tool pending across the lease refresh boundary; the event loop remains available to maintenance.
 		await vi.advanceTimersByTimeAsync(SHORT_TTL_MS - WARM_LEAD_MS);
 
 		expect(warm).toHaveBeenCalledTimes(1);
 		expect(controller.getState()).toMatchObject({ idle: false, active: true, refreshCount: 1 });
+		await controller.dispose();
+	});
+
+	it("keeps maintenance visible while a requested pause drains through active tools", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-pause-requested-test");
+		const requestTime = START_TIME - 60_000;
+		manager.appendCustomEntry(CACHE_WARM_MARKER_TYPE, makeMarker({ warmedAt: requestTime }));
+		const { session, warm } = makeSession({
+			manager,
+			isIdle: false,
+			isPauseRequested: true,
+			canWarmPromptCache: true,
+		});
+		const controller = new CacheWarmController(session, { enabled: true });
+
+		await controller.start();
+
+		// Once tools make maintenance safe, a requested pause must keep both the scheduler and its box active.
+		expect(controller.getState()).toMatchObject({ idle: true, active: true });
+		await vi.advanceTimersByTimeAsync(requestTime + SHORT_TTL_MS - WARM_LEAD_MS - START_TIME);
+		expect(warm).toHaveBeenCalledTimes(1);
 		await controller.dispose();
 	});
 
@@ -372,6 +509,30 @@ describe("CacheWarmController", () => {
 		await resumed.dispose();
 	});
 
+	it("keeps a newer inactive marker authoritative over retained foreground proof", async () => {
+		const manager = SessionManager.inMemory("/tmp/cache-warm-inactive-marker-precedence-test");
+		const foregroundWarmedAt = START_TIME - 30_000;
+		manager.appendMessage(makeAssistant(foregroundWarmedAt));
+		const foregroundRefresh = makeForegroundRefresh(manager, foregroundWarmedAt);
+		const { session, warm } = makeSession({ manager });
+		const controller = new CacheWarmController(session, { enabled: false });
+
+		await controller.start();
+		await controller.resumeAfterForegroundRequest(foregroundRefresh);
+		// A later maintenance miss closes this warm span and must not be bypassed by toggling warming back on.
+		manager.appendCustomEntry(
+			CACHE_WARM_MARKER_TYPE,
+			makeMarker({ warmedAt: START_TIME - 10_000, cacheActive: false }),
+		);
+		await controller.setEnabled(true);
+
+		expect(controller.getState()).toMatchObject({ active: false, cacheUnavailable: true, retrying: false });
+		expect(manager.getBranch()).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(SHORT_TTL_MS);
+		expect(warm).not.toHaveBeenCalled();
+		await controller.dispose();
+	});
+
 	it("replays long retention and cumulative maintenance cost from an active-branch marker", async () => {
 		const manager = SessionManager.inMemory("/tmp/cache-warm-long-test");
 		manager.appendCustomEntry(
@@ -400,11 +561,12 @@ describe("CacheWarmController", () => {
 		const controller = new CacheWarmController(session, { enabled: true });
 
 		await controller.pause();
-		await controller.resumeAfterForegroundRequest({
-			provider: "another-provider",
-			model: "another-model",
-			warmedAt: START_TIME - 10_000,
-		});
+		await controller.resumeAfterForegroundRequest(
+			makeForegroundRefresh(manager, START_TIME - 10_000, {
+				provider: "another-provider",
+				model: "another-model",
+			}),
+		);
 
 		expect(manager.getBranch()).toHaveLength(1);
 		expect(manager.getBranch()[0]).toMatchObject({ data: { warmedAt: existingMarker.warmedAt } });
@@ -434,11 +596,7 @@ describe("CacheWarmController", () => {
 		expect(warm).not.toHaveBeenCalled();
 
 		await controller.pause();
-		await controller.resumeAfterForegroundRequest({
-			provider: "proxy",
-			model: "claude-test",
-			warmedAt: assistantTime,
-		});
+		await controller.resumeAfterForegroundRequest(makeForegroundRefresh(manager, assistantTime));
 
 		expect(controller.getState()).toMatchObject({
 			active: true,
@@ -463,16 +621,22 @@ describe("CacheWarmController", () => {
 
 		await controller.start();
 		expect(controller.getState().active).toBe(true);
+		const staleRefresh = makeForegroundRefresh(manager, Date.now());
 		await controller.invalidate();
 		await vi.advanceTimersByTimeAsync(SHORT_TTL_MS);
 
 		expect(warm).not.toHaveBeenCalled();
 		expect(controller.getState()).toMatchObject({ active: false, refreshCount: 0, totalCost: 0 });
-		await controller.resumeAfterForegroundRequest({
-			provider: "proxy",
-			model: "claude-test",
-			warmedAt: Date.now(),
-		});
+
+		// A response started before invalidation cannot reactivate the discarded prompt generation.
+		await controller.resumeAfterForegroundRequest(staleRefresh);
+		expect(controller.getState()).toMatchObject({ active: false, refreshCount: 0, totalCost: 0 });
+
+		await controller.resumeAfterForegroundRequest(
+			makeForegroundRefresh(manager, Date.now(), {
+				generation: controller.getForegroundRefreshGeneration(),
+			}),
+		);
 		expect(controller.getState()).toMatchObject({ active: true, warmSince: Date.now(), refreshCount: 0 });
 		await controller.dispose();
 	});
@@ -491,11 +655,7 @@ describe("CacheWarmController", () => {
 
 		// A real request on the selected branch establishes the only lease the scheduler may maintain.
 		await controller.pause();
-		await controller.resumeAfterForegroundRequest({
-			provider: "proxy",
-			model: "claude-test",
-			warmedAt: START_TIME,
-		});
+		await controller.resumeAfterForegroundRequest(makeForegroundRefresh(manager, START_TIME));
 		expect(manager.getBranch().at(-1)).toMatchObject({
 			type: "custom",
 			customType: CACHE_WARM_MARKER_TYPE,

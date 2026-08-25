@@ -23,10 +23,13 @@ export interface CacheWarmMarker {
 	totalCost: number;
 }
 
-/** Successful foreground request that may have refreshed the currently selected cache identity. */
+/** Successful foreground cache proof bound to the prompt identity and session-tree leaf that produced it. */
 export interface ForegroundCacheRefresh {
 	provider: string;
 	model: string;
+	cacheIdentity: string;
+	leafId: string | null;
+	generation: number;
 	warmedAt: number;
 }
 
@@ -34,6 +37,7 @@ export interface ForegroundCacheRefresh {
 export interface CacheWarmState {
 	enabled: boolean;
 	eligible: boolean;
+	/** Whether maintenance is in a user-visible idle or pause-drain window. */
 	idle: boolean;
 	warming: boolean;
 	active: boolean;
@@ -187,6 +191,9 @@ export class CacheWarmController {
 	private warmPromise: Promise<void> | undefined;
 	private error: string | undefined;
 	private replayInvalidated = false;
+	private foregroundRefreshGeneration = 0;
+	/** Latest branch-bound foreground proof retained while warming is disabled for a later interactive opt-in. */
+	private retainedForegroundRefresh: ForegroundCacheRefresh | undefined;
 
 	constructor(session: AgentSession, options: CacheWarmControllerOptions = {}) {
 		this.session = session;
@@ -201,23 +208,28 @@ export class CacheWarmController {
 	}
 
 	/** Replace the session lifecycle boundary without allowing an old request to write into the new tree. */
-	async rebind(session: AgentSession): Promise<void> {
+	async rebind(session: AgentSession, options: { resume?: boolean } = {}): Promise<void> {
+		this.foregroundRefreshGeneration++;
 		await this.pause();
 		this.session = session;
 		this.lease = undefined;
 		this.error = undefined;
+		this.replayInvalidated = false;
+		this.retainedForegroundRefresh = undefined;
 		this.ensureStatusTimer();
-		await this.resume();
+		if (options.resume !== false) await this.resume();
 	}
 
 	/** Discard a lease after prompt configuration changes and wait for the next foreground refresh. */
 	async invalidate(): Promise<void> {
+		// Reject foreground listeners captured before this prompt/context boundary, even if they finish later.
+		this.foregroundRefreshGeneration++;
+		this.retainedForegroundRefresh = undefined;
 		await this.pauseRequest();
 		this.lease = undefined;
 		this.error = undefined;
 		this.replayInvalidated = true;
 		if (!this.paused) {
-			this.replayInvalidated = false;
 			await this.syncWithoutReplay();
 		}
 	}
@@ -238,7 +250,13 @@ export class CacheWarmController {
 		}
 		this.paused = false;
 		this.ensureStatusTimer();
-		await this.sync();
+		const retained = this.getRetainedForegroundRefresh();
+		if (this.replayInvalidated && !retained) {
+			await this.syncWithoutReplay();
+		} else {
+			this.replayInvalidated = false;
+			await this.sync(retained);
+		}
 	}
 
 	/** Stop timers and drain an in-flight hidden request before a real agent or summary request starts. */
@@ -258,15 +276,53 @@ export class CacheWarmController {
 		await this.resumeWithForegroundRequest(refresh);
 	}
 
+	/** Current prompt/context generation used to reject delayed foreground proofs after invalidation. */
+	getForegroundRefreshGeneration(): number {
+		return this.foregroundRefreshGeneration;
+	}
+
 	private async resumeWithForegroundRequest(refresh?: ForegroundCacheRefresh): Promise<void> {
+		// Keep the newest complete proof even when delayed settle listeners finish out of order.
+		const currentRefresh = refresh?.generation === this.foregroundRefreshGeneration ? refresh : undefined;
+		if (
+			currentRefresh &&
+			(!this.retainedForegroundRefresh || currentRefresh.warmedAt >= this.retainedForegroundRefresh.warmedAt)
+		) {
+			this.retainedForegroundRefresh = currentRefresh;
+		}
 		this.paused = false;
-		if (this.replayInvalidated && !refresh) {
-			this.replayInvalidated = false;
+		const retained = currentRefresh ? this.getRetainedForegroundRefresh() : undefined;
+		if (this.replayInvalidated && !retained) {
 			await this.syncWithoutReplay();
 		} else {
 			this.replayInvalidated = false;
-			await this.sync(refresh);
+			await this.sync(retained);
 		}
+	}
+
+	private getRetainedForegroundRefresh(): ForegroundCacheRefresh | undefined {
+		const retained = this.retainedForegroundRefresh;
+		if (!retained) return undefined;
+
+		// A retained proof may follow descendants, but not a branch, model, or prompt-identity change.
+		const model = this.session.model;
+		const cacheIdentity = this.session.getPromptCacheIdentity(this.session.systemPrompt);
+		const remainsOnActiveBranch =
+			retained.leafId === null
+				? this.session.sessionManager.getLeafId() === null
+				: this.session.sessionManager.getBranch().some((entry) => entry.id === retained.leafId);
+		if (
+			remainsOnActiveBranch &&
+			retained.generation === this.foregroundRefreshGeneration &&
+			model?.provider === retained.provider &&
+			model.id === retained.model &&
+			cacheIdentity === retained.cacheIdentity
+		) {
+			return retained;
+		}
+
+		this.retainedForegroundRefresh = undefined;
+		return undefined;
 	}
 
 	/** Re-evaluate the active branch, current model, and retention, then schedule the next refresh. */
@@ -296,7 +352,9 @@ export class CacheWarmController {
 			if (!retention) return;
 			const systemPromptSnapshot = this.session.createPromptCacheSystemPromptSnapshot(systemPrompt);
 			const foregroundWarmedAt =
-				foregroundRefresh?.provider === model.provider && foregroundRefresh.model === model.id
+				foregroundRefresh?.provider === model.provider &&
+				foregroundRefresh.model === model.id &&
+				foregroundRefresh.cacheIdentity === cacheIdentity
 					? foregroundRefresh.warmedAt
 					: undefined;
 			this.lease = this.deriveLease(
@@ -333,8 +391,9 @@ export class CacheWarmController {
 	/** Snapshot state for commands and presentation. */
 	getState(): CacheWarmState {
 		const eligible = this.session.model?.api === "anthropic-messages";
-		const idle = this.session.isIdle && !this.session.isCompacting && !this.paused;
 		const available = this.session.canWarmPromptCache && !this.paused;
+		// Show maintenance once a requested pause reaches safe tool work, but never over an active provider request.
+		const idle = available && (this.session.isIdle || this.session.isPauseRequested);
 		const leaseActive = this.lease?.cacheActive === true && this.lease.expiresAt > Date.now();
 		const cold = this.lease?.cacheActive === true && this.lease.expiresAt <= Date.now();
 		return {
@@ -409,7 +468,7 @@ export class CacheWarmController {
 
 		if (
 			foregroundWarmedAt === undefined ||
-			(markerLease?.cacheActive === true && markerLease.warmedAt >= foregroundWarmedAt)
+			(markerLease !== undefined && markerLease.warmedAt >= foregroundWarmedAt)
 		) {
 			return markerLease;
 		}
