@@ -1570,61 +1570,66 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process Cloudflare AI Gateway models
-		if (data["cloudflare-ai-gateway"]?.models) {
-			for (const [prefixedId, model] of Object.entries(data["cloudflare-ai-gateway"].models)) {
-				const m = model as ModelsDevModel;
-				if (m.tool_call !== true) continue;
+		// Keep gateway Workers AI routes complete when models.dev only lists them in the standalone Workers AI catalog.
+		const cloudflareAIGatewayModels: Record<string, ModelsDevModel> = {};
+		for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"]?.models ?? {})) {
+			cloudflareAIGatewayModels[`workers-ai/${modelId}`] = model;
+		}
+		Object.assign(cloudflareAIGatewayModels, data["cloudflare-ai-gateway"]?.models ?? {});
 
-				const slashIdx = prefixedId.indexOf("/");
-				if (slashIdx === -1) continue;
-				const upstream = prefixedId.slice(0, slashIdx);
-				const nativeId = prefixedId.slice(slashIdx + 1);
+		// Preserve gateway-specific metadata when models.dev also publishes the derived route directly.
+		for (const [prefixedId, model] of Object.entries(cloudflareAIGatewayModels)) {
+			const m = model as ModelsDevModel;
+			if (m.tool_call !== true) continue;
 
-				let api: "anthropic-messages" | "openai-completions" | "openai-responses";
-				let baseUrl: string;
-				let id: string;
-				if (upstream === "openai") {
-					api = "openai-responses";
-					baseUrl = CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL;
-					id = nativeId;
-				} else if (upstream === "anthropic") {
-					api = "anthropic-messages";
-					baseUrl = CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL;
-					id = nativeId;
-				} else if (upstream === "workers-ai") {
-					api = "openai-completions";
-					baseUrl = CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL;
-					id = prefixedId;
-				} else {
-					continue;
-				}
+			const slashIdx = prefixedId.indexOf("/");
+			if (slashIdx === -1) continue;
+			const upstream = prefixedId.slice(0, slashIdx);
+			const nativeId = prefixedId.slice(slashIdx + 1);
 
-				// Gateway passthroughs forward session affinity headers to upstreams that
-				// use them for cache/routing affinity.
-				const compat =
-					upstream === "anthropic" || upstream === "workers-ai" ? { sendSessionAffinityHeaders: true } : undefined;
-
-				models.push({
-					id,
-					name: m.name || id,
-					api,
-					provider: "cloudflare-ai-gateway",
-					baseUrl,
-					reasoning: m.reasoning === true,
-					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
-					cost: {
-						input: m.cost?.input || 0,
-						output: m.cost?.output || 0,
-						cacheRead: m.cost?.cache_read || 0,
-						cacheWrite: m.cost?.cache_write || 0,
-					},
-					contextWindow: m.limit?.context || 4096,
-					maxTokens: m.limit?.output || 4096,
-					...(compat ? { compat } : {}),
-				});
-				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
+			let api: "anthropic-messages" | "openai-completions" | "openai-responses";
+			let baseUrl: string;
+			let id: string;
+			if (upstream === "openai") {
+				api = "openai-responses";
+				baseUrl = CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL;
+				id = nativeId;
+			} else if (upstream === "anthropic") {
+				api = "anthropic-messages";
+				baseUrl = CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL;
+				id = nativeId;
+			} else if (upstream === "workers-ai") {
+				api = "openai-completions";
+				baseUrl = CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL;
+				id = prefixedId;
+			} else {
+				continue;
 			}
+
+			// Gateway passthroughs forward session affinity headers to upstreams that
+			// use them for cache/routing affinity.
+			const compat =
+				upstream === "anthropic" || upstream === "workers-ai" ? { sendSessionAffinityHeaders: true } : undefined;
+
+			models.push({
+				id,
+				name: m.name || id,
+				api,
+				provider: "cloudflare-ai-gateway",
+				baseUrl,
+				reasoning: m.reasoning === true,
+				input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+				cost: {
+					input: m.cost?.input || 0,
+					output: m.cost?.output || 0,
+					cacheRead: m.cost?.cache_read || 0,
+					cacheWrite: m.cost?.cache_write || 0,
+				},
+				contextWindow: m.limit?.context || 4096,
+				maxTokens: m.limit?.output || 4096,
+				...(compat ? { compat } : {}),
+			});
+			recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
 		}
 
 		// Process xAi models
