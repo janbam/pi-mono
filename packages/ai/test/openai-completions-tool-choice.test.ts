@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
 import { getModel, stream, streamSimple } from "../src/compat.ts";
+import { getSupportedThinkingLevels } from "../src/models.ts";
 import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
 
 const mockState = vi.hoisted(() => ({
@@ -77,8 +78,20 @@ const localOpenAICompletionsModel = {
 type CapturedParams = {
 	chat_template_kwargs?: Record<string, unknown>;
 	thinking?: unknown;
+	reasoning?: { effort?: string };
 	reasoning_effort?: string;
 };
+
+const GLM53_PROVIDER_CASES = [
+	{ name: "zai/glm-5.3", model: getModel("zai", "glm-5.3")! },
+	{ name: "zai/glm-5.3-flash", model: getModel("zai", "glm-5.3-flash")! },
+	{ name: "zai-coding-cn/glm-5.3", model: getModel("zai-coding-cn", "glm-5.3")! },
+	{ name: "zai-coding-cn/glm-5.3-flash", model: getModel("zai-coding-cn", "glm-5.3-flash")! },
+	{ name: "opencode-go/glm-5.3", model: getModel("opencode-go", "glm-5.3")! },
+	{ name: "opencode-go/glm-5.3-flash", model: getModel("opencode-go", "glm-5.3-flash")! },
+	{ name: "openrouter/z-ai/glm-5.3", model: getModel("openrouter", "z-ai/glm-5.3")! },
+	{ name: "openrouter/z-ai/glm-5.3-flash", model: getModel("openrouter", "z-ai/glm-5.3-flash")! },
+] as const;
 
 async function captureSimpleParams(
 	model: Model<"openai-completions">,
@@ -310,18 +323,47 @@ describe("openai-completions tool_choice", () => {
 					max: "max",
 				});
 			}
+		}
+	});
 
-			const glm53 = getModel(provider, "glm-5.3")!;
-			expect(glm53.compat?.supportsReasoningEffort).toBe(true);
-			expect(glm53.thinkingLevelMap).toEqual({
-				off: null,
-				minimal: null,
-				low: "low",
-				medium: null,
-				high: "high",
-				xhigh: null,
-				max: "max",
-			});
+	it.each(GLM53_PROVIDER_CASES)("exposes only disabled, low, high, and max for $name", ({ model }) => {
+		expect(model.thinkingLevelMap).toEqual({
+			off: "none",
+			minimal: null,
+			low: "low",
+			medium: null,
+			high: "high",
+			xhigh: null,
+			max: "max",
+		});
+		expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "high", "max"]);
+	});
+
+	it.each(GLM53_PROVIDER_CASES)("maps $name thinking levels to its native request shape", async ({ model }) => {
+		const disabledParams = await captureSimpleParams(model);
+		const usesOpenRouterFormat = model.provider === "openrouter";
+
+		// Z.AI-compatible routes toggle thinking separately; OpenRouter encodes disable as effort none.
+		if (!usesOpenRouterFormat) {
+			expect(disabledParams.thinking).toEqual({ type: "disabled" });
+			expect(disabledParams.reasoning).toBeUndefined();
+		} else {
+			expect(disabledParams.thinking).toBeUndefined();
+			expect(disabledParams.reasoning).toEqual({ effort: "none" });
+		}
+		expect(disabledParams.reasoning_effort).toBeUndefined();
+
+		for (const reasoning of ["low", "high", "max"] as const) {
+			const params = await captureSimpleParams(model, reasoning);
+			if (!usesOpenRouterFormat) {
+				expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
+				expect(params.reasoning).toBeUndefined();
+				expect(params.reasoning_effort).toBe(reasoning);
+			} else {
+				expect(params.thinking).toBeUndefined();
+				expect(params.reasoning).toEqual({ effort: reasoning });
+				expect(params.reasoning_effort).toBeUndefined();
+			}
 		}
 	});
 
