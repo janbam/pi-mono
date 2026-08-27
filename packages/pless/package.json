@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pless",
-	"version": "0.84.2",
+	"version": "0.84.3",
 	"description": "Markdown pager CLI built on pi-tui's markdown renderer, with less-style multi-file navigation",
 	"type": "module",
 	"bin": {
@@ -37,8 +37,8 @@
 		"directory": "packages/pless"
 	},
 	"dependencies": {
-		"@earendil-works/pi-coding-agent": "^0.84.2",
-		"@earendil-works/pi-tui": "^0.84.2"
+		"@earendil-works/pi-coding-agent": "^0.84.3",
+		"@earendil-works/pi-tui": "^0.84.3"
 	},
 	"devDependencies": {
 		"shx": "0.4.0"
