@@ -371,7 +371,7 @@ function createExtensionAPI(
 		},
 
 		executeTool(toolName, input, options) {
-			runtime.assertActive();
+			assertActive();
 			return runtime.executeTool(toolName, input, options);
 		},
 

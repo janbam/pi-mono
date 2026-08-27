@@ -1224,8 +1224,10 @@ function buildParams(
 		}
 	}
 
+	// Cache-maintenance requests must stay on the requested model: a server-side
+	// fallback would warm the fallback model's cache while the lease is attributed here.
 	const allowedFallbackModels = model.compat?.allowedFallbackModels;
-	if (allowedFallbackModels && allowedFallbackModels.length > 0) {
+	if (allowedFallbackModels && allowedFallbackModels.length > 0 && !promptCacheWarmup) {
 		params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
 	}
 
