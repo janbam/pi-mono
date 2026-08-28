@@ -52,7 +52,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/compact [prompt]` | Manually compact context, optionally with custom instructions |
 | `/warm [on\|off]` | Show, enable, or disable Claude prompt-cache warming |
 | `/copy` | Copy last assistant message to clipboard |
-| `/export [file]` | Export session to HTML or JSONL |
+| `/export [file]` | Export session to HTML, Markdown, or JSONL |
 | `/import <file>` | Import and resume a session from a JSONL file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
@@ -142,7 +142,7 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 
 ## Exporting and Sharing Sessions
 
-Use `/export [file]` to write a session to HTML.
+Use `/export [file]` to write a session to HTML by default. A `.jsonl` filename writes the active branch as session data. A `.md` filename writes the visible conversation with user turns labeled `A:`, assistant turns labeled `B:`, and `---` between turns. Markdown export omits thinking blocks and renders tools in the same collapsed form shown before Ctrl+O expands them.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 

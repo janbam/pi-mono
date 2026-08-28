@@ -76,7 +76,7 @@ import {
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
-import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
+import { createToolHtmlRenderer, createToolTextRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
 	type ExecuteToolOptions,
@@ -112,10 +112,13 @@ import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import { exportSessionToJsonl } from "./session-export.ts";
+import { exportSessionToJsonl, exportSessionToMarkdown } from "./session-export.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { getLatestCompactionEntry } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+
+export { type ParsedSkillBlock, parseSkillBlock } from "./skill-block.ts";
+
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
@@ -124,39 +127,12 @@ import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
-// ============================================================================
-// Skill Block Parsing
-// ============================================================================
-
-/** Parsed skill block from a user message */
-export interface ParsedSkillBlock {
-	name: string;
-	location: string;
-	content: string;
-	userMessage: string | undefined;
-}
-
 /** Immutable cache provenance captured from the exact foreground provider request. */
 export interface ForegroundPromptCacheRequest {
 	provider: string;
 	model: string;
 	cacheIdentity: string | undefined;
 	leafId: string | null;
-}
-
-/**
- * Parse a skill block from message text.
- * Returns null if the text doesn't contain a skill block.
- */
-export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const match = text.match(/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/);
-	if (!match) return null;
-	return {
-		name: match[1],
-		location: match[2],
-		content: match[3],
-		userMessage: match[4]?.trim() || undefined,
-	};
 }
 
 /** Session-specific events that extend the core AgentEvent */
@@ -4008,6 +3984,19 @@ export class AgentSession {
 	 */
 	exportToJsonl(outputPath?: string): string {
 		return exportSessionToJsonl(this.sessionManager, outputPath);
+	}
+
+	/**
+	 * Export the currently visible conversation to Markdown.
+	 * Thinking is omitted and tools use the same collapsed renderers as interactive mode.
+	 */
+	exportToMarkdown(outputPath?: string): string {
+		const toolRenderer = createToolTextRenderer({
+			getToolDefinition: (name) => this.getToolDefinition(name),
+			theme,
+			cwd: this.sessionManager.getCwd(),
+		});
+		return exportSessionToMarkdown(this.messages, outputPath, toolRenderer);
 	}
 
 	// =========================================================================

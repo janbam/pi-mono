@@ -6323,7 +6323,10 @@ export class InteractiveMode {
 		const outputPath = this.getPathCommandArgument(text, "/export");
 
 		try {
-			if (outputPath?.endsWith(".jsonl")) {
+			if (outputPath?.endsWith(".md")) {
+				const filePath = this.session.exportToMarkdown(outputPath);
+				this.showStatus(`Session exported to: ${filePath}`);
+			} else if (outputPath?.endsWith(".jsonl")) {
 				const filePath = this.session.exportToJsonl(outputPath);
 				this.showStatus(`Session exported to: ${filePath}`);
 			} else {
