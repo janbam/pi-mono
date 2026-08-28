@@ -1,13 +1,9 @@
-/**
- * Tool HTML renderer for custom tools in HTML export.
- *
- * Renders custom tool calls and results to HTML by invoking their TUI renderers
- * and converting the ANSI output to HTML.
- */
+/** Render registered tools through their TUI definitions for HTML and plain-text exports. */
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../../utils/ansi.ts";
 import type { ToolDefinition, ToolRenderContext } from "../extensions/types.ts";
 import { ansiLinesToHtml } from "./ansi-to-html.ts";
 
@@ -35,16 +31,35 @@ export interface ToolHtmlRenderer {
 	): { collapsed?: string; expanded?: string } | undefined;
 }
 
-/**
- * Create a tool HTML renderer.
- *
- * The renderer looks up tool definitions and invokes their renderCall/renderResult
- * methods, converting the resulting TUI Component output (ANSI) to HTML.
- */
-const ANSI_ESCAPE_REGEX = /\x1b\[[\d;]*m/g;
+/** Render tool calls and collapsed results as plain text using their TUI renderers. */
+export interface ToolTextRenderer {
+	/** Render the concise tool call shown in collapsed interactive mode. */
+	renderCall(toolCallId: string, toolName: string, args: unknown, isPartial?: boolean): string | undefined;
+	/** Render the concise collapsed result; null means the renderer intentionally produced no visible text. */
+	renderResult(
+		toolCallId: string,
+		toolName: string,
+		result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
+		details: unknown,
+		isError: boolean,
+	): string | null | undefined;
+}
 
+interface ToolComponentRenderer {
+	renderCall(toolCallId: string, toolName: string, args: unknown, isPartial: boolean): string[] | undefined;
+	renderResult(
+		toolCallId: string,
+		toolName: string,
+		result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
+		details: unknown,
+		isError: boolean,
+		expanded: boolean,
+	): string[] | undefined;
+}
+
+/** Return whether a rendered line contains no visible characters. */
 function isBlankRenderedLine(line: string): boolean {
-	return line.replace(ANSI_ESCAPE_REGEX, "").trim().length === 0;
+	return stripAnsi(line).trim().length === 0;
 }
 
 function trimRenderedResultLines(lines: string[]): string[] {
@@ -55,7 +70,8 @@ function trimRenderedResultLines(lines: string[]): string[] {
 	return lines.slice(start, end);
 }
 
-export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRenderer {
+/** Share stateful TUI component rendering before adapting the output format. */
+function createToolComponentRenderer(deps: ToolHtmlRendererDeps): ToolComponentRenderer {
 	const { getToolDefinition, theme, cwd, width = 100 } = deps;
 
 	const renderedCallComponents = new Map<string, Component>();
@@ -96,7 +112,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	};
 
 	return {
-		renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined {
+		renderCall(toolCallId: string, toolName: string, args: unknown, isPartial: boolean): string[] | undefined {
 			try {
 				renderedArgs.set(toolCallId, args);
 				const toolDef = getToolDefinition(toolName);
@@ -107,13 +123,12 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 				const component = toolDef.renderCall(
 					args,
 					theme,
-					createRenderContext(toolCallId, renderedCallComponents.get(toolCallId), false, true, false),
+					createRenderContext(toolCallId, renderedCallComponents.get(toolCallId), false, isPartial, false),
 				);
 				renderedCallComponents.set(toolCallId, component);
-				const lines = component.render(width);
-				return ansiLinesToHtml(lines);
+				return component.render(width);
 			} catch {
-				// On error, return undefined so HTML export can fall back to structured result rendering
+				// Let the export format apply its own safe fallback.
 				return undefined;
 			}
 		},
@@ -124,7 +139,8 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			result: Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 			details: unknown,
 			isError: boolean,
-		): { collapsed?: string; expanded?: string } | undefined {
+			expanded: boolean,
+		): string[] | undefined {
 			try {
 				const toolDef = getToolDefinition(toolName);
 				if (!toolDef?.renderResult) {
@@ -139,34 +155,65 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 					isError,
 				};
 
-				// Render collapsed
-				const collapsedComponent = toolDef.renderResult(
+				// Render only the presentation requested by the export adapter.
+				const component = toolDef.renderResult(
 					agentToolResult,
-					{ expanded: false, isPartial: false },
+					{ expanded, isPartial: false },
 					theme,
-					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), false, false, isError),
+					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), expanded, false, isError),
 				);
-				renderedResultComponents.set(toolCallId, collapsedComponent);
-				const collapsed = ansiLinesToHtml(trimRenderedResultLines(collapsedComponent.render(width)));
-
-				// Render expanded
-				const expandedComponent = toolDef.renderResult(
-					agentToolResult,
-					{ expanded: true, isPartial: false },
-					theme,
-					createRenderContext(toolCallId, renderedResultComponents.get(toolCallId), true, false, isError),
-				);
-				renderedResultComponents.set(toolCallId, expandedComponent);
-				const expanded = ansiLinesToHtml(trimRenderedResultLines(expandedComponent.render(width)));
-
-				return {
-					...(collapsed && collapsed !== expanded ? { collapsed } : {}),
-					expanded,
-				};
+				renderedResultComponents.set(toolCallId, component);
+				return trimRenderedResultLines(component.render(width));
 			} catch {
-				// On error, return undefined so HTML export can fall back to structured result rendering
+				// Let the export format apply its own safe fallback.
 				return undefined;
 			}
+		},
+	};
+}
+
+/** Create the HTML adapter over the shared collapsed/expanded TUI rendering path. */
+export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRenderer {
+	const renderer = createToolComponentRenderer(deps);
+	return {
+		renderCall(toolCallId, toolName, args) {
+			const lines = renderer.renderCall(toolCallId, toolName, args, true);
+			return lines ? ansiLinesToHtml(lines) : undefined;
+		},
+		renderResult(toolCallId, toolName, result, details, isError) {
+			const collapsedLines = renderer.renderResult(toolCallId, toolName, result, details, isError, false);
+			if (!collapsedLines) return undefined;
+			const expandedLines = renderer.renderResult(toolCallId, toolName, result, details, isError, true);
+			if (!expandedLines) return undefined;
+
+			const collapsed = ansiLinesToHtml(collapsedLines);
+			const expanded = ansiLinesToHtml(expandedLines);
+			return {
+				...(collapsed && collapsed !== expanded ? { collapsed } : {}),
+				expanded,
+			};
+		},
+	};
+}
+
+function ansiLinesToText(lines: string[]): string | null {
+	const text = trimRenderedResultLines(lines)
+		.map((line) => stripAnsi(line).trimEnd())
+		.join("\n");
+	return text || null;
+}
+
+/** Create the plain-text adapter used by Markdown conversation export. */
+export function createToolTextRenderer(deps: ToolHtmlRendererDeps): ToolTextRenderer {
+	const renderer = createToolComponentRenderer(deps);
+	return {
+		renderCall(toolCallId, toolName, args, isPartial = true) {
+			const lines = renderer.renderCall(toolCallId, toolName, args, isPartial);
+			return lines ? (ansiLinesToText(lines) ?? undefined) : undefined;
+		},
+		renderResult(toolCallId, toolName, result, details, isError) {
+			const lines = renderer.renderResult(toolCallId, toolName, result, details, isError, false);
+			return lines ? ansiLinesToText(lines) : undefined;
 		},
 	};
 }
