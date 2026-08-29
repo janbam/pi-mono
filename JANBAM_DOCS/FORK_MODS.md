@@ -23,6 +23,27 @@ Implementation:
 
 Consequence: the `branchSummary.skipPrompt` setting has no consumer anymore and is marked obsolete in the settings docs.
 
+## Extension shortcuts can be dispatched from the `/tree` selector
+
+Upstream behavior: extension shortcuts registered with `pi.registerShortcut()` are wired only into the default editor (`defaultEditor.onExtensionShortcut`), so they never fire while a picker such as `/tree` owns the input. Extensions also have no way to read which tree node is selected.
+
+Fork behavior: `pi.registerShortcut(key, { contexts: ["editor", "tree"], handler })`. `contexts` defaults to `["editor"]`, so existing extensions are unaffected. A `tree` shortcut receives keys the tree selector's own keybindings declined, before they would become type-to-search input. Pi closes the selector, runs the handler with the selected entry (`entryId`, `entryType`, `role`, `text`) while the session is still on the branch the user was looking at, and then applies the handler's returned `{ navigateTo?, editorText?, reopenTree? }`.
+
+The pre-navigation ordering is the point of the feature: an extension can read the later turns of the current thread (via `ctx.sessionManager`) before navigation truncates the active branch, then ask pi to branch at the selected entry with rewritten prompt text.
+
+Guards: only one tree handler runs at a time, and a navigation whose dispatch-time leaf no longer matches the current leaf is dropped instead of truncating a branch the user extended meanwhile.
+
+Implementation:
+
+- Types (`ExtensionShortcutContext`, `ExtensionShortcutTreeSelection`, `ExtensionShortcutInvocation`, `ExtensionShortcutResult`, `ExtensionShortcutHandler`) and the `registerShortcut` signature: `packages/coding-agent/src/core/extensions/types.ts`, exported via `src/core/extensions/index.ts` and `src/index.ts`
+- `contexts` default: `packages/coding-agent/src/core/extensions/loader.ts`
+- Selector hook `TreeSelectorComponent.onExtensionShortcut`: `packages/coding-agent/src/modes/interactive/components/tree-selector.ts`
+- Dispatch, result application, and the extracted `performTreeNavigation` shared with the normal confirm path: `packages/coding-agent/src/modes/interactive/interactive-mode.ts`
+- Tests: `packages/coding-agent/test/tree-selector.test.ts`, `test/interactive-mode-tree-shortcut.test.ts`, `test/extensions-runner.test.ts`
+- Docs and example: `packages/coding-agent/docs/extensions.md`, `packages/coding-agent/examples/extensions/tree-shortcut.ts`
+
+Note: shortcut keys are still validated against built-in *editor* keybindings, so keys reserved there (`ctrl+c`, `ctrl+g`, ...) are rejected even for tree-only shortcuts.
+
 ## Keybinding experiments that were reverted
 
 An attempt to move the follow-up queueing keybinding (`app.message.followUp`) from `alt+enter` to the four-modifier chord `ctrl+alt+super+a` (emitted by a keyd remap of physical `Alt+Enter`) was reverted: the chord never reliably reached pi. Tested both without tmux and with Kitty-protocol passthrough enabled, so tmux is ruled out as the cause — the loss is in keyd's emitted events or the terminal's encoding of the chord, unresolved. `app.message.followUp` remains at the upstream default `alt+enter` and the keyd remap is unused.

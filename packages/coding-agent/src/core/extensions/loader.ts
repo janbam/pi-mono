@@ -309,11 +309,18 @@ function createExtensionAPI(
 			shortcut: KeyId,
 			options: {
 				description?: string;
-				handler: (ctx: import("./types.ts").ExtensionContext) => Promise<void> | void;
+				contexts?: import("./types.ts").ExtensionShortcutContext[];
+				handler: import("./types.ts").ExtensionShortcutHandler;
 			},
 		): void {
 			assertActive();
-			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
+			// Default to editor-only dispatch so shortcuts never leak into pickers unasked.
+			extension.shortcuts.set(shortcut, {
+				shortcut,
+				extensionPath: extension.path,
+				...options,
+				contexts: options.contexts ?? ["editor"],
+			});
 		},
 
 		registerFlag(

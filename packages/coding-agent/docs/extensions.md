@@ -1630,6 +1630,55 @@ pi.registerShortcut("ctrl+shift+p", {
 });
 ```
 
+#### Shortcut contexts
+
+`contexts` selects where a shortcut is dispatched from. It defaults to `["editor"]`, meaning the shortcut fires only while the normal input editor has focus.
+
+```typescript
+pi.registerShortcut("ctrl+shift+r", {
+  description: "Rewrite the selected prompt",
+  contexts: ["editor", "tree"],
+  handler: async (ctx, invocation) => {
+    if (invocation.context === "editor") {
+      ctx.ui.setEditorText(await rewrite(ctx.ui.getEditorText()));
+      return;
+    }
+
+    // Tree context: the session is still on the branch the user was looking at,
+    // so ctx.sessionManager still sees the later turns below the selected entry.
+    const rewritten = await rewrite(invocation.selection.text ?? "");
+    return { navigateTo: invocation.selection.entryId, editorText: rewritten };
+  },
+});
+```
+
+**Tree context.** A `tree` shortcut fires while the `/tree` selector is open. The selector's own keybindings always win; your shortcut only sees keys no tree binding claimed, and it takes precedence over the selector's type-to-search. Before the handler runs, pi closes the selector, so the handler owns the screen for its own dialogs (`ctx.ui.select`, `ctx.ui.custom`, ...).
+
+`invocation.selection` describes the entry the cursor was on:
+
+```typescript
+{
+  entryId: string;      // session entry id
+  entryType: string;    // "message", "compaction", "branch_summary", ...
+  role?: string;        // message role, undefined for non-message entries
+  text?: string;        // full text of the entry, undefined when it has none
+}
+```
+
+The handler runs *before* any navigation happens. That ordering matters: `ctx.sessionManager` still reports the branch the user was looking at, including the turns that come after the selected entry. Read whatever context you need there, then ask pi to move.
+
+A `tree` handler may return an `ExtensionShortcutResult`:
+
+| Field | Effect |
+|-------|--------|
+| `navigateTo` | Navigate the session to that entry id without a branch summary, exactly as confirming it in the selector would. Ignored when it equals the current leaf. |
+| `editorText` | Set the editor text after navigating. Overrides the prompt pi would otherwise restore, and unlike that restore it also replaces a non-empty editor. |
+| `reopenTree` | Reopen the tree selector on the previously selected entry. Ignored when navigation happened. |
+
+Returning nothing leaves the session untouched and returns focus to the editor. Handler return values are ignored for `editor` invocations.
+
+**Conflict rules are unchanged by `contexts`.** Shortcut keys are still validated against the built-in *editor* keybindings, so a key reserved there (`ctrl+c`, `ctrl+g`, ...) is rejected even for a tree-only shortcut. Keys bound by the tree selector itself (`shift+l`, plain letters used for search, ...) are not rejected at registration; the selector simply consumes them first.
+
 ### pi.registerFlag(name, options)
 
 Register a CLI flag.
@@ -3026,6 +3075,7 @@ All examples in [examples/extensions/](../examples/extensions/).
 | **Session Metadata** |||
 | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
 | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |
+| `tree-shortcut.ts` | Shortcut that fires inside `/tree` and rewrites the selected prompt | `registerShortcut` with `contexts: ["tree"]` |
 | **Misc** |||
 | `inline-bash.ts` | Inline bash in tool calls | `on("tool_call")` |
 | `bash-spawn-hook.ts` | Adjust bash command, cwd, and env before execution | `createBashTool`, `spawnHook` |
