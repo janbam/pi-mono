@@ -7,6 +7,7 @@ import type {
 	ModelsApiStreamOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
+	ModelsSimpleStreamOptions,
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
@@ -106,6 +107,21 @@ export class ModelRegistry {
 		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
 		return this.runtime.complete(model, context, options);
+	}
+
+	/**
+	 * One-off request described in provider-neutral terms.
+	 *
+	 * Unlike `complete`, which takes api-specific request options, this takes a pi thinking level
+	 * as `reasoning` and lets the provider adapter encode it in its own request shape. Callers that
+	 * only know a thinking level should use this instead of translating levels into api options.
+	 *
+	 * Two caller obligations: omit `reasoning` to ask for no thinking, since adapters read a
+	 * present level as thinking-on; and clamp a user-supplied level with `clampThinkingLevel`
+	 * first, because only some adapters clamp on their own.
+	 */
+	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
+		return this.runtime.completeSimple(model, context, options);
 	}
 
 	getProviderDisplayName(provider: string): string {
