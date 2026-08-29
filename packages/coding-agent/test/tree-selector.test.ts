@@ -737,3 +737,79 @@ describe("confirm with and without summary menu", () => {
 		expect(calls).toEqual([{ entryId: "user-1", showSummaryMenu: true }]);
 	});
 });
+
+describe("extension shortcut dispatch", () => {
+	const buildTwoEntryTree = () =>
+		buildTree([userMessage("user-1", null, "hello"), assistantMessage("asst-1", "user-1", "hi")]);
+
+	test("offers unhandled keys to the extension hook with the selected entry", () => {
+		const calls: Array<{ keyData: string; entryId: string; role?: string; text?: string }> = [];
+		const selector = new TreeSelectorComponent(
+			buildTwoEntryTree(),
+			"asst-1",
+			24,
+			() => {},
+			() => {},
+		);
+		selector.onExtensionShortcut = (keyData, selection) => {
+			calls.push({ keyData, entryId: selection.entryId, role: selection.role, text: selection.text });
+			return true;
+		};
+		selector.handleInput("\x1b[A"); // up: asst-1 → user-1
+
+		selector.handleInput("\x12"); // ctrl+r: no tree binding claims it
+
+		expect(calls).toEqual([{ keyData: "\x12", entryId: "user-1", role: "user", text: "hello" }]);
+	});
+
+	test("tree keybindings win over extension shortcuts", () => {
+		const confirmed: string[] = [];
+		const extensionKeys: string[] = [];
+		const selector = new TreeSelectorComponent(
+			buildTwoEntryTree(),
+			"asst-1",
+			24,
+			(entryId) => confirmed.push(entryId),
+			() => {},
+		);
+		selector.onExtensionShortcut = (keyData) => {
+			extensionKeys.push(keyData);
+			return true;
+		};
+
+		selector.handleInput("\r"); // confirm is a tree binding
+
+		expect(confirmed).toEqual(["asst-1"]);
+		expect(extensionKeys).toEqual([]);
+	});
+
+	test("claimed printable keys never reach tree search", () => {
+		const selector = new TreeSelectorComponent(
+			buildTwoEntryTree(),
+			"asst-1",
+			24,
+			() => {},
+			() => {},
+		);
+		selector.onExtensionShortcut = () => true;
+
+		selector.handleInput("h");
+
+		expect(selector.getTreeList().getSearchQuery()).toBe("");
+	});
+
+	test("declined extension keys still fall through to tree search", () => {
+		const selector = new TreeSelectorComponent(
+			buildTwoEntryTree(),
+			"asst-1",
+			24,
+			() => {},
+			() => {},
+		);
+		selector.onExtensionShortcut = () => false;
+
+		selector.handleInput("h");
+
+		expect(selector.getTreeList().getSearchQuery()).toBe("h");
+	});
+});

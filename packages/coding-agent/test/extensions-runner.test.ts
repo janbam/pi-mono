@@ -188,6 +188,30 @@ describe("ExtensionRunner", () => {
 			warnSpy.mockRestore();
 		});
 
+		it("defaults shortcuts to editor dispatch and keeps explicit contexts", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.registerShortcut("alt+r", {
+						description: "Editor only by default",
+						handler: async () => {},
+					});
+					pi.registerShortcut("alt+g", {
+						description: "Editor and tree",
+						contexts: ["editor", "tree"],
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "contexts.ts"), extCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const shortcuts = runner.getShortcuts(defaultKeybindings);
+
+			expect(shortcuts.get("alt+r")?.contexts).toEqual(["editor"]);
+			expect(shortcuts.get("alt+g")?.contexts).toEqual(["editor", "tree"]);
+		});
+
 		it("allows a shortcut when the reserved set no longer contains the default key", async () => {
 			const extCode = `
 				export default function(pi) {

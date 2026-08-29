@@ -1294,12 +1294,19 @@ export interface ExtensionAPI {
 	/** Register a custom command. */
 	registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void;
 
-	/** Register a keyboard shortcut. */
+	/**
+	 * Register a keyboard shortcut.
+	 *
+	 * `contexts` selects where the shortcut is dispatched from and defaults to `["editor"]`.
+	 * Tree-context shortcuts fire while the `/tree` selector is open, receive the selected
+	 * entry, and may return an `ExtensionShortcutResult` to drive navigation and editor text.
+	 */
 	registerShortcut(
 		shortcut: KeyId,
 		options: {
 			description?: string;
-			handler: (ctx: ExtensionContext) => Promise<void> | void;
+			contexts?: ExtensionShortcutContext[];
+			handler: ExtensionShortcutHandler;
 		},
 	): void;
 
@@ -1599,10 +1606,65 @@ export interface ExtensionFlag {
 	extensionPath: string;
 }
 
+/**
+ * Dispatch site of a registered extension shortcut.
+ *
+ * `editor` shortcuts fire while the normal input editor has focus. `tree` shortcuts fire
+ * while the `/tree` selector is open, before the selector consumes the key as search input;
+ * the selector's own keybindings always win.
+ */
+export type ExtensionShortcutContext = "editor" | "tree";
+
+/** The tree entry selected when a `tree` shortcut fires. */
+export interface ExtensionShortcutTreeSelection {
+	/** Session entry id of the selected node. */
+	entryId: string;
+	/** Entry type, e.g. `"message"`, `"compaction"`, `"branch_summary"`. */
+	entryType: string;
+	/** Message role for message entries, undefined for every other entry type. */
+	role?: string;
+	/** Full text carried by the entry, or undefined when it has none. */
+	text?: string;
+}
+
+/** Where a shortcut handler was invoked from, plus context-specific payload. */
+export type ExtensionShortcutInvocation =
+	| { context: "editor" }
+	| { context: "tree"; selection: ExtensionShortcutTreeSelection };
+
+/**
+ * Follow-up action requested by a `tree` shortcut handler. Returning nothing leaves the
+ * session untouched and returns focus to the editor.
+ *
+ * Fields are applied in this order:
+ * - `navigateTo`: navigate the session to that entry (no branch summary), as if the user
+ *   had confirmed it in the tree selector
+ * - `editorText`: set the editor text, overriding the prompt pi would otherwise restore
+ * - `reopenTree`: reopen the tree selector on the previously selected entry; ignored when
+ *   navigation actually happened
+ */
+export interface ExtensionShortcutResult {
+	navigateTo?: string;
+	editorText?: string;
+	reopenTree?: boolean;
+}
+
+/**
+ * Shortcut handler. The `invocation` argument tells the handler where it fired; handlers
+ * registered only for the editor can ignore it. Only `tree` invocations honor the result.
+ */
+export type ExtensionShortcutHandler = (
+	ctx: ExtensionContext,
+	invocation: ExtensionShortcutInvocation,
+	// biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
+) => Promise<ExtensionShortcutResult | void> | ExtensionShortcutResult | void;
+
 export interface ExtensionShortcut {
 	shortcut: KeyId;
 	description?: string;
-	handler: (ctx: ExtensionContext) => Promise<void> | void;
+	/** Dispatch sites this shortcut is active in. Defaults to `["editor"]` at registration. */
+	contexts: ExtensionShortcutContext[];
+	handler: ExtensionShortcutHandler;
 	extensionPath: string;
 }
 

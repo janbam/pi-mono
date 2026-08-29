@@ -13,6 +13,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { isCacheWarmEntry } from "../../../core/cache-warmup.ts";
+import type { ExtensionShortcutTreeSelection } from "../../../core/extensions/types.ts";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -130,6 +131,11 @@ class TreeList implements Component {
 	public onCancel?: () => void;
 	public onCopy?: (text: string | undefined) => void;
 	public onLabelEdit?: (entryId: string, currentLabel: string | undefined) => void;
+	/**
+	 * Offered every key no tree binding handled, together with the current selection.
+	 * Returning true claims the key and keeps it out of the search query.
+	 */
+	public onExtensionShortcut?: (keyData: string, selection: ExtensionShortcutTreeSelection) => boolean;
 
 	constructor(
 		tree: SessionTreeNode[],
@@ -1101,6 +1107,9 @@ class TreeList implements Component {
 			}
 		} else if (kb.matches(keyData, "app.tree.toggleLabelTimestamp")) {
 			this.showLabelTimestamps = !this.showLabelTimestamps;
+		} else if (this.dispatchExtensionShortcut(keyData)) {
+			// Extension shortcuts get the key only after every tree binding declined it,
+			// and before it would be swallowed as search input.
 		} else {
 			const hasControlChars = [...keyData].some((ch) => {
 				const code = ch.charCodeAt(0);
@@ -1112,6 +1121,23 @@ class TreeList implements Component {
 				this.applyFilter();
 			}
 		}
+	}
+
+	/**
+	 * Offer an unhandled key to the extension shortcut dispatcher along with the current
+	 * selection. Returns true when an extension claimed the key.
+	 */
+	private dispatchExtensionShortcut(keyData: string): boolean {
+		const selected = this.filteredNodes[this.selectedIndex]?.node;
+		if (!selected || !this.onExtensionShortcut) return false;
+
+		const entry = selected.entry;
+		return this.onExtensionShortcut(keyData, {
+			entryId: entry.id,
+			entryType: entry.type,
+			role: entry.type === "message" ? entry.message.role : undefined,
+			text: this.getEntryCopyText(selected),
+		});
 	}
 
 	/**
@@ -1347,6 +1373,8 @@ export class TreeSelectorComponent extends Container implements Focusable {
 	private treeContainer: Container;
 	private onLabelChangeCallback?: (entryId: string, label: string | undefined) => void;
 	public onCopy?: (text: string | undefined) => void;
+	/** See `TreeList.onExtensionShortcut`. Set by the host after construction. */
+	public onExtensionShortcut?: (keyData: string, selection: ExtensionShortcutTreeSelection) => boolean;
 
 	// Focusable implementation - propagate to labelInput when active for IME cursor positioning
 	private _focused = false;
@@ -1380,6 +1408,8 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.treeList.onSelect = onSelect;
 		this.treeList.onCancel = onCancel;
 		this.treeList.onCopy = (text) => this.onCopy?.(text);
+		this.treeList.onExtensionShortcut = (keyData, selection) =>
+			this.onExtensionShortcut?.(keyData, selection) ?? false;
 		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
 
 		this.treeContainer = new Container();

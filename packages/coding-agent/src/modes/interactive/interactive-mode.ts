@@ -83,6 +83,9 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionRunner,
+	ExtensionShortcut,
+	ExtensionShortcutResult,
+	ExtensionShortcutTreeSelection,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -469,6 +472,12 @@ export class InteractiveMode {
 	private editorComponentFactory: EditorFactory | undefined;
 	private autocompleteProvider: AutocompleteProvider | undefined;
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
+	/** Extension shortcuts for the current runtime, keyed by their configured key string. */
+	private extensionShortcuts: Map<KeyId, ExtensionShortcut> = new Map();
+	/** Builds the ctx handed to extension shortcut handlers; undefined when none are registered. */
+	private createExtensionShortcutContext: (() => ExtensionContext) | undefined;
+	/** True while a tree-context shortcut handler is running, to serialize tree dispatches. */
+	private treeShortcutInFlight = false;
 	private fdPath: string | undefined;
 	private editorContainer: Container;
 	private activeSelectorToken?: object;
@@ -2139,6 +2148,8 @@ export class InteractiveMode {
 	 */
 	private setupExtensionShortcuts(extensionRunner: ExtensionRunner): void {
 		const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
+		this.extensionShortcuts = shortcuts;
+		this.createExtensionShortcutContext = undefined;
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
@@ -2177,13 +2188,17 @@ export class InteractiveMode {
 			getSystemPrompt: () => this.session.systemPrompt,
 		});
 
+		// Keep the factory so the tree selector can build the same ctx for tree-context shortcuts.
+		this.createExtensionShortcutContext = createContext;
+
 		// Set up the extension shortcut handler on the default editor
 		this.defaultEditor.onExtensionShortcut = (data: string) => {
 			for (const [shortcutStr, shortcut] of shortcuts) {
+				if (!shortcut.contexts.includes("editor")) continue;
 				// Cast to KeyId - extension shortcuts use the same format
 				if (matchesKey(data, shortcutStr as KeyId)) {
 					// Run handler async, don't block input
-					Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+					Promise.resolve(shortcut.handler(createContext(), { context: "editor" })).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return true;
@@ -2191,6 +2206,91 @@ export class InteractiveMode {
 			}
 			return false;
 		};
+	}
+
+	/**
+	 * Dispatch a key the tree selector declined to a tree-context extension shortcut.
+	 *
+	 * Closes the selector before running the handler so the extension owns the screen for its
+	 * own dialogs, and so its handler observes the session branch the user was looking at.
+	 * Returns true when an extension claimed the key.
+	 */
+	private dispatchTreeExtensionShortcut(
+		keyData: string,
+		selection: ExtensionShortcutTreeSelection,
+		closeSelector: () => void,
+	): boolean {
+		const createContext = this.createExtensionShortcutContext;
+		// One handler at a time: a reopened tree must not start a second navigation race.
+		if (!createContext || this.treeShortcutInFlight) return false;
+
+		for (const [shortcutStr, shortcut] of this.extensionShortcuts) {
+			if (!shortcut.contexts.includes("tree")) continue;
+			if (!matchesKey(keyData, shortcutStr as KeyId)) continue;
+
+			// Remember where the session stood, so a slow handler cannot navigate over work
+			// the user started while it was running.
+			const leafAtDispatch = this.sessionManager.getLeafId();
+			closeSelector();
+			this.treeShortcutInFlight = true;
+			void this.runTreeExtensionShortcut(shortcut, createContext(), selection, leafAtDispatch).finally(() => {
+				this.treeShortcutInFlight = false;
+			});
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Run a tree-context shortcut handler and apply what it asks for: navigate, set editor
+	 * text, or reopen the tree. A handler that returns nothing leaves the session untouched.
+	 */
+	private async runTreeExtensionShortcut(
+		shortcut: ExtensionShortcut,
+		ctx: ExtensionContext,
+		selection: ExtensionShortcutTreeSelection,
+		leafAtDispatch: string | null,
+	): Promise<void> {
+		let result: ExtensionShortcutResult | undefined;
+		try {
+			result = (await shortcut.handler(ctx, { context: "tree", selection })) ?? undefined;
+		} catch (err) {
+			this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
+			return;
+		}
+
+		if (!result) {
+			this.ui.requestRender();
+			return;
+		}
+
+		// The session moved on while the handler was thinking, so its navigation target is
+		// stale. Drop the whole result rather than truncating a branch the user just extended.
+		if (result.navigateTo && this.sessionManager.getLeafId() !== leafAtDispatch) {
+			this.showStatus("Skipped tree navigation: session moved on");
+			return;
+		}
+
+		// Navigating to the entry pi is already parked on would be a no-op, so only the
+		// editor text is applied in that case.
+		const navigationTarget =
+			result.navigateTo && result.navigateTo !== this.sessionManager.getLeafId() ? result.navigateTo : undefined;
+
+		if (navigationTarget) {
+			await this.performTreeNavigation(navigationTarget, {
+				summarize: false,
+				editorText: result.editorText,
+			});
+			return;
+		}
+
+		if (result.editorText !== undefined) {
+			this.editor.setText(result.editorText);
+		}
+		if (result.reopenTree) {
+			this.showTreeSelector(selection.entryId);
+		}
+		this.ui.requestRender();
 	}
 
 	/**
@@ -2394,6 +2494,8 @@ export class InteractiveMode {
 		this.setCustomEditorComponent(undefined);
 		this.setupAutocompleteProvider();
 		this.defaultEditor.onExtensionShortcut = undefined;
+		this.extensionShortcuts = new Map();
+		this.createExtensionShortcutContext = undefined;
 		this.updateTerminalTitle();
 		this.workingMessage = undefined;
 		this.workingVisible = true;
@@ -5513,60 +5615,12 @@ export class InteractiveMode {
 						}
 					}
 
-					// The user committed to navigating: stop the active response first.
-					if (this.session.isStreaming) {
-						this.restoreQueuedMessagesToEditor();
-						await this.session.abort();
-					}
-
-					// Set up escape handler and status indicator if summarizing
-					let showingSummaryIndicator = false;
-					const originalOnEscape = this.defaultEditor.onEscape;
-
-					if (wantsSummary) {
-						this.defaultEditor.onEscape = () => {
-							this.session.abortBranchSummary();
-						};
-						this.chatContainer.addChild(new Spacer(1));
-						this.showStatusIndicator(new BranchSummaryStatusIndicator(this.ui));
-						showingSummaryIndicator = true;
-						this.ui.requestRender();
-					}
-
-					try {
-						const result = await this.session.navigateTree(entryId, {
-							summarize: wantsSummary,
-							customInstructions,
-						});
-
-						if (result.aborted) {
-							// Summarization aborted - re-show tree selector with same selection
-							this.showStatus("Branch summarization cancelled");
-							this.showTreeSelector(entryId);
-							return;
-						}
-						if (result.cancelled) {
-							this.showStatus("Navigation cancelled");
-							return;
-						}
-
-						// Update UI
-						this.chatContainer.clear();
-						this.renderInitialMessages();
-						if (result.editorText && !this.editor.getText().trim()) {
-							this.editor.setText(result.editorText);
-						}
-						this.showStatus("Navigated to selected point");
-						void this.flushCompactionQueue({ willRetry: false });
-					} catch (error) {
-						this.showError(error instanceof Error ? error.message : String(error));
-					} finally {
-						if (showingSummaryIndicator) {
-							this.clearStatusIndicator("branchSummary");
-						}
-						this.defaultEditor.onEscape = originalOnEscape;
-						await this.cacheWarmController.resume();
-					}
+					await this.performTreeNavigation(entryId, {
+						summarize: wantsSummary,
+						customInstructions,
+						// Summarization aborted - re-show tree selector with same selection
+						onAborted: () => this.showTreeSelector(entryId),
+					});
 				},
 				() => {
 					done();
@@ -5591,8 +5645,95 @@ export class InteractiveMode {
 					this.showError(error instanceof Error ? error.message : String(error));
 				}
 			};
+			selector.onExtensionShortcut = (keyData, selection) =>
+				this.dispatchTreeExtensionShortcut(keyData, selection, () => {
+					done();
+					this.ui.requestRender();
+				});
 			return { component: selector, focus: selector };
 		});
+	}
+
+	/**
+	 * Commit a tree navigation the user already confirmed: stop the active response, optionally
+	 * summarize the abandoned branch, move the session, and re-render the transcript.
+	 *
+	 * `editorText` forces the editor content after navigating. Without it, the target's prompt is
+	 * restored only into an empty editor so a live draft is never clobbered.
+	 */
+	private async performTreeNavigation(
+		entryId: string,
+		options: {
+			summarize: boolean;
+			customInstructions?: string;
+			editorText?: string;
+			onAborted?: () => void;
+		},
+	): Promise<"navigated" | "aborted" | "cancelled" | "failed"> {
+		// The user committed to navigating: stop the active response first. Queued prompts are
+		// moved into the editor by that abort, and the editor is then their only copy.
+		let restoredQueuedCount = 0;
+		if (this.session.isStreaming) {
+			restoredQueuedCount = this.restoreQueuedMessagesToEditor();
+			await this.session.abort();
+		}
+
+		// Summarization runs a model call, so give it a visible indicator and an escape hatch.
+		let showingSummaryIndicator = false;
+		const originalOnEscape = this.defaultEditor.onEscape;
+
+		if (options.summarize) {
+			this.defaultEditor.onEscape = () => {
+				this.session.abortBranchSummary();
+			};
+			this.chatContainer.addChild(new Spacer(1));
+			this.showStatusIndicator(new BranchSummaryStatusIndicator(this.ui));
+			showingSummaryIndicator = true;
+			this.ui.requestRender();
+		}
+
+		try {
+			const result = await this.session.navigateTree(entryId, {
+				summarize: options.summarize,
+				customInstructions: options.customInstructions,
+			});
+
+			if (result.aborted) {
+				this.showStatus("Branch summarization cancelled");
+				// Hand control back before the cleanup below, so the caller can re-show the tree
+				// without the user sitting in a focused editor while cache warmup resumes.
+				options.onAborted?.();
+				return "aborted";
+			}
+			if (result.cancelled) {
+				this.showStatus("Navigation cancelled");
+				return "cancelled";
+			}
+
+			// Update UI
+			this.chatContainer.clear();
+			this.renderInitialMessages();
+			if (options.editorText !== undefined) {
+				// Keep prompts rescued from the queue above the caller's text instead of
+				// overwriting user-authored drafts that exist nowhere else.
+				const rescued = restoredQueuedCount > 0 ? this.editor.getText().trim() : "";
+				this.editor.setText(rescued ? `${rescued}\n\n${options.editorText}` : options.editorText);
+			} else if (result.editorText && !this.editor.getText().trim()) {
+				this.editor.setText(result.editorText);
+			}
+			this.showStatus("Navigated to selected point");
+			void this.flushCompactionQueue({ willRetry: false });
+			return "navigated";
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return "failed";
+		} finally {
+			if (showingSummaryIndicator) {
+				this.clearStatusIndicator("branchSummary");
+			}
+			this.defaultEditor.onEscape = originalOnEscape;
+			await this.cacheWarmController.resume();
+		}
 	}
 
 	private showSessionSelector(): void {

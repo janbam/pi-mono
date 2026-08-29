@@ -78,6 +78,11 @@ export type {
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,
+	ExtensionShortcutContext,
+	ExtensionShortcutHandler,
+	ExtensionShortcutInvocation,
+	ExtensionShortcutResult,
+	ExtensionShortcutTreeSelection,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
