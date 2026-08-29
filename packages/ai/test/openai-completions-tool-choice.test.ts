@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
 import { getModel, stream, streamSimple } from "../src/compat.ts";
 import { getSupportedThinkingLevels } from "../src/models.ts";
-import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
+import type { AssistantMessage, Model, ModelSimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
 
 const mockState = vi.hoisted(() => ({
 	lastParams: undefined as unknown,
@@ -95,7 +95,7 @@ const GLM53_PROVIDER_CASES = [
 
 async function captureSimpleParams(
 	model: Model<"openai-completions">,
-	reasoning?: SimpleStreamOptions["reasoning"],
+	reasoning?: ModelSimpleStreamOptions["reasoning"],
 ): Promise<CapturedParams> {
 	let payload: unknown;
 
@@ -326,9 +326,9 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
-	it.each(GLM53_PROVIDER_CASES)("exposes only disabled, low, high, and max for $name", ({ model }) => {
+	it.each(GLM53_PROVIDER_CASES)("exposes only low, high, and max for always-thinking $name", ({ model }) => {
 		expect(model.thinkingLevelMap).toEqual({
-			off: "none",
+			off: null,
 			minimal: null,
 			low: "low",
 			medium: null,
@@ -336,36 +336,36 @@ describe("openai-completions tool_choice", () => {
 			xhigh: null,
 			max: "max",
 		});
-		expect(getSupportedThinkingLevels(model)).toEqual(["off", "low", "high", "max"]);
+		expect(getSupportedThinkingLevels(model)).toEqual(["low", "high", "max"]);
 	});
 
-	it.each(GLM53_PROVIDER_CASES)("maps $name thinking levels to its native request shape", async ({ model }) => {
-		const disabledParams = await captureSimpleParams(model);
-		const usesOpenRouterFormat = model.provider === "openrouter";
+	it.each(GLM53_PROVIDER_CASES)(
+		"clamps off and maps $name thinking levels to its native request shape",
+		async ({ model }) => {
+			const usesOpenRouterFormat = model.provider === "openrouter";
 
-		// Z.AI-compatible routes toggle thinking separately; OpenRouter encodes disable as effort none.
-		if (!usesOpenRouterFormat) {
-			expect(disabledParams.thinking).toEqual({ type: "disabled" });
-			expect(disabledParams.reasoning).toBeUndefined();
-		} else {
-			expect(disabledParams.thinking).toBeUndefined();
-			expect(disabledParams.reasoning).toEqual({ effort: "none" });
-		}
-		expect(disabledParams.reasoning_effort).toBeUndefined();
-
-		for (const reasoning of ["low", "high", "max"] as const) {
-			const params = await captureSimpleParams(model, reasoning);
-			if (!usesOpenRouterFormat) {
-				expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
-				expect(params.reasoning).toBeUndefined();
-				expect(params.reasoning_effort).toBe(reasoning);
-			} else {
-				expect(params.thinking).toBeUndefined();
-				expect(params.reasoning).toEqual({ effort: reasoning });
-				expect(params.reasoning_effort).toBeUndefined();
+			// Omitted and explicit off are both caller intent; the compat path must resolve them before
+			// the adapter sees the request, so this always-thinking family starts at low.
+			for (const { requested, effective } of [
+				{ requested: undefined, effective: "low" },
+				{ requested: "off", effective: "low" },
+				{ requested: "low", effective: "low" },
+				{ requested: "high", effective: "high" },
+				{ requested: "max", effective: "max" },
+			] as const) {
+				const params = await captureSimpleParams(model, requested);
+				if (!usesOpenRouterFormat) {
+					expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
+					expect(params.reasoning).toBeUndefined();
+					expect(params.reasoning_effort).toBe(effective);
+				} else {
+					expect(params.thinking).toBeUndefined();
+					expect(params.reasoning).toEqual({ effort: effective });
+					expect(params.reasoning_effort).toBeUndefined();
+				}
 			}
-		}
-	});
+		},
+	);
 
 	it("maps z.ai GLM-5.2 thinking levels to reasoning_effort", async () => {
 		const model = getModel("zai", "glm-5.2")!;
@@ -1449,7 +1449,7 @@ describe("openai-completions tool_choice", () => {
 		expect(params.reasoning_effort).toBeUndefined();
 	});
 
-	it("omits disabled thinking for Moonshot Kimi K2.7 Code models", async () => {
+	it("enables thinking for always-thinking Moonshot Kimi K2.7 Code models", async () => {
 		const cases = [getModel("moonshotai", "kimi-k2.7-code"), getModel("moonshotai-cn", "kimi-k2.7-code")];
 
 		for (const model of cases) {
@@ -1470,7 +1470,7 @@ describe("openai-completions tool_choice", () => {
 			).result();
 
 			const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
-			expect(params.thinking).toBeUndefined();
+			expect(params.thinking).toEqual({ type: "enabled" });
 			expect(params.reasoning_effort).toBeUndefined();
 		}
 	});

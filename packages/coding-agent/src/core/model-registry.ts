@@ -7,6 +7,7 @@ import type {
 	ModelsApiStreamOptions,
 	ModelsRefreshOptions,
 	ModelsRefreshResult,
+	ModelsSimpleStreamOptions,
 	Provider,
 	ProviderHeaders,
 } from "@earendil-works/pi-ai";
@@ -106,6 +107,17 @@ export class ModelRegistry {
 		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
 		return this.runtime.complete(model, context, options);
+	}
+
+	/**
+	 * One-off request described in provider-neutral terms.
+	 *
+	 * Unlike `complete`, which takes api-specific request options, this accepts any pi thinking
+	 * level as `reasoning`, including `off`. The runtime clamps it to what the model supports and
+	 * lets the provider adapter encode the effective level in its own request shape.
+	 */
+	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
+		return this.runtime.completeSimple(model, context, options);
 	}
 
 	getProviderDisplayName(provider: string): string {

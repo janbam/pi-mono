@@ -44,6 +44,22 @@ Implementation:
 
 Note: shortcut keys are still validated against built-in *editor* keybindings, so keys reserved there (`ctrl+c`, `ctrl+g`, ...) are rejected even for tree-only shortcuts.
 
+## Extensions can make model-aware one-off requests
+
+Upstream behavior: extensions can make one-off requests through `ctx.modelRegistry.complete()`, but that API accepts provider-specific options. An extension holding a Pi thinking level must translate it into each provider's wire format and separately account for models that cannot honor the requested level.
+
+Fork behavior: `ctx.modelRegistry.completeSimple()` accepts provider-neutral options, including the complete Pi thinking vocabulary (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). The Models boundary clamps the requested level against model metadata before the provider adapter encodes it. Omitted reasoning means `off`; an always-thinking model receives its lowest supported level instead.
+
+The same normalization applies to the public Pi compatibility API and Models implementation, so the TUI, CLI, and extensions share one policy boundary. Raw API-specific requests remain unchanged for callers that deliberately own provider payload semantics.
+
+Implementation:
+
+- Model-aware options and shared normalization: `packages/ai/src/types.ts`, `packages/ai/src/models.ts`
+- Compatibility entry point: `packages/ai/src/compat.ts`
+- Extension runtime and facade: `packages/coding-agent/src/core/model-runtime.ts`, `packages/coding-agent/src/core/model-registry.ts`
+- Extension docs: `packages/coding-agent/docs/extensions.md`
+- Regression coverage: `packages/ai/test/models-simple-reasoning.test.ts`, `packages/ai/test/openai-completions-tool-choice.test.ts`, `packages/ai/test/zai-coding-plan-models.test.ts`, `packages/coding-agent/test/model-runtime-auth-options.test.ts`
+
 ## Keybinding experiments that were reverted
 
 An attempt to move the follow-up queueing keybinding (`app.message.followUp`) from `alt+enter` to the four-modifier chord `ctrl+alt+super+a` (emitted by a keyd remap of physical `Alt+Enter`) was reverted: the chord never reliably reached pi. Tested both without tmux and with Kitty-protocol passthrough enabled, so tmux is ruled out as the cause — the loss is in keyd's emitted events or the terminal's encoding of the chord, unresolved. `app.message.followUp` remains at the upstream default `alt+enter` and the keyd remap is unused.
