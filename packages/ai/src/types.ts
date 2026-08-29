@@ -325,12 +325,19 @@ export interface AnthropicAllowedFallbackModel {
 export interface SimpleStreamOptions extends StreamOptions {
 	/** Provider-neutral tool selection for simple requests. Default: "auto". */
 	toolChoice?: ToolChoice;
+	/** Effective reasoning level already resolved against the model. */
 	reasoning?: ThinkingLevel;
 	/** Ask a capable provider to return a durable handle and continue the request asynchronously. */
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
 }
+
+/** Provider-neutral simple options before the requested reasoning level is resolved against a model. */
+export type ModelSimpleStreamOptions = Omit<SimpleStreamOptions, "reasoning"> & {
+	/** Requested pi thinking level. Omitted means `off`. */
+	reasoning?: ModelThinkingLevel;
+};
 
 // Generic StreamFunction with typed options.
 //

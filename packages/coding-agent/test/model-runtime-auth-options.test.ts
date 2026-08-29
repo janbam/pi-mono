@@ -263,6 +263,41 @@ describe("ModelRuntime auth options", () => {
 		});
 	});
 
+	it("clamps model-aware off before extension provider dispatch", async () => {
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
+		let capturedReasoning: string | undefined;
+		runtime.registerProvider("always-thinking", {
+			baseUrl: "https://example.test/v1",
+			apiKey: "generated-key",
+			api: "openai-completions",
+			streamSimple: (_model, _context, options) => {
+				capturedReasoning = options?.reasoning;
+				throw new Error("captured");
+			},
+			models: [
+				{
+					...testModel("always-thinking-model"),
+					reasoning: true,
+					thinkingLevelMap: {
+						off: null,
+						minimal: null,
+						low: "low",
+						medium: null,
+						high: "high",
+						xhigh: null,
+						max: "max",
+					},
+				},
+			],
+		});
+		const model = runtime.getModel("always-thinking", "always-thinking-model");
+		expect(model).toBeDefined();
+
+		await runtime.completeSimple(model!, { messages: [] }, { reasoning: "off" });
+
+		expect(capturedReasoning).toBe("low");
+	});
+
 	it("forwards cancellation to extension OAuth refresh", async () => {
 		const credentials = AuthStorage.inMemory({
 			"extension-oauth": {

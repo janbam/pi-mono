@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { getBuiltinModel } from "../src/providers/all.ts";
+import { getSupportedThinkingLevels } from "../src/models.ts";
+import { getBuiltinModel, getBuiltinModels } from "../src/providers/all.ts";
 
 it("exposes GLM-4.6V on the China Coding Plan catalog", () => {
 	const model = getBuiltinModel("zai-coding-cn", "glm-4.6v");
@@ -56,5 +57,34 @@ it("keeps zero costs for Coding Plan models without a matching API price", () =>
 
 	for (const provider of ["zai", "zai-coding-cn"] as const) {
 		expect(getBuiltinModel(provider, "glm-5.2-highspeed").cost).toEqual(zeroCost);
+	}
+});
+
+it("marks GLM-5.3 models as always-thinking across providers", () => {
+	for (const [provider, modelId, expectedLevels] of [
+		["cloudflare-ai-gateway", "workers-ai/@cf/zai-org/glm-5.3", ["low", "medium", "high"]],
+		["cloudflare-ai-gateway", "workers-ai/@cf/zai-org/glm-5.3-flash", ["low", "medium", "high"]],
+		["cloudflare-workers-ai", "@cf/zai-org/glm-5.3", ["low", "medium", "high"]],
+		["cloudflare-workers-ai", "@cf/zai-org/glm-5.3-flash", ["low", "medium", "high"]],
+		["opencode-go", "glm-5.3", ["low", "high", "max"]],
+		["opencode-go", "glm-5.3-flash", ["low", "high", "max"]],
+		["openrouter", "z-ai/glm-5.3", ["low", "high", "max"]],
+		["openrouter", "z-ai/glm-5.3-flash", ["low", "high", "max"]],
+		["openrouter", "z-ai/glm-5.3-flash:batch", ["low", "high", "max"]],
+		["together", "zai-org/GLM-5.3-Flash", ["low", "high", "max"]],
+		["vercel-ai-gateway", "zai/glm-5.3", ["low", "high", "max"]],
+		["vercel-ai-gateway", "zai/glm-5.3-flash", ["low", "high", "max"]],
+		["zai", "glm-5.3", ["low", "high", "max"]],
+		["zai", "glm-5.3-flash", ["low", "high", "max"]],
+		["zai", "glm-5.3-highspeed", ["low", "high", "max"]],
+		["zai-coding-cn", "glm-5.3", ["low", "high", "max"]],
+		["zai-coding-cn", "glm-5.3-flash", ["low", "high", "max"]],
+		["zai-coding-cn", "glm-5.3-highspeed", ["low", "high", "max"]],
+	] as const) {
+		const model = getBuiltinModels(provider).find((entry) => entry.id === modelId);
+		if (!model) throw new Error(`Missing ${provider}/${modelId}`);
+
+		expect(model.thinkingLevelMap?.off).toBeNull();
+		expect(getSupportedThinkingLevels(model)).toEqual(expectedLevels);
 	}
 });

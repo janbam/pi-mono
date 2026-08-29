@@ -112,13 +112,9 @@ export class ModelRegistry {
 	/**
 	 * One-off request described in provider-neutral terms.
 	 *
-	 * Unlike `complete`, which takes api-specific request options, this takes a pi thinking level
-	 * as `reasoning` and lets the provider adapter encode it in its own request shape. Callers that
-	 * only know a thinking level should use this instead of translating levels into api options.
-	 *
-	 * Two caller obligations: omit `reasoning` to ask for no thinking, since adapters read a
-	 * present level as thinking-on; and clamp a user-supplied level with `clampThinkingLevel`
-	 * first, because only some adapters clamp on their own.
+	 * Unlike `complete`, which takes api-specific request options, this accepts any pi thinking
+	 * level as `reasoning`, including `off`. The runtime clamps it to what the model supports and
+	 * lets the provider adapter encode the effective level in its own request shape.
 	 */
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
 		return this.runtime.completeSimple(model, context, options);

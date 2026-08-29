@@ -39,7 +39,7 @@ import { openAICompletionsApi } from "./api/openai-completions.lazy.ts";
 import { openAIResponsesApi } from "./api/openai-responses.lazy.ts";
 import { piMessagesApi } from "./api/pi-messages.lazy.ts";
 import { getEnvApiKey } from "./env-api-keys.ts";
-import type { ModelsApiStreamOptions } from "./models.ts";
+import { type ModelsApiStreamOptions, resolveModelSimpleStreamOptions } from "./models.ts";
 import { builtinModels, getBuiltinModel, getBuiltinModels, getBuiltinProviders } from "./providers/all.ts";
 
 export type { BuiltinProvider } from "./providers/all.ts";
@@ -52,6 +52,7 @@ import type {
 	AssistantMessageEventStream,
 	Context,
 	Model,
+	ModelSimpleStreamOptions,
 	ProviderStreamOptions,
 	ProviderStreams,
 	SimpleStreamOptions,
@@ -275,23 +276,25 @@ export async function complete<TApi extends Api>(
 export function streamSimple<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: ModelSimpleStreamOptions,
 ): AssistantMessageEventStream {
 	const builtinProvider = getBuiltinProviderForModel(model);
 	if (builtinProvider) {
 		if (model.provider.startsWith("cloudflare-") && !hasResolvedCloudflareAuth(options)) {
 			return compatModels.streamSimple(model, context, options);
 		}
-		return builtinProvider.streamSimple(model, context, withEnvApiKey(model, options));
+		const resolvedOptions = resolveModelSimpleStreamOptions(model, options);
+		return builtinProvider.streamSimple(model, context, withEnvApiKey(model, resolvedOptions));
 	}
 	const provider = resolveApiProvider(model.api);
-	return provider.streamSimple(model, context, withEnvApiKey(model, options));
+	const resolvedOptions = resolveModelSimpleStreamOptions(model, options);
+	return provider.streamSimple(model, context, withEnvApiKey(model, resolvedOptions));
 }
 
 export async function completeSimple<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: ModelSimpleStreamOptions,
 ): Promise<AssistantMessage> {
 	const s = streamSimple(model, context, options);
 	return s.result();

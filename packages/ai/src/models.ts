@@ -25,6 +25,7 @@ import type {
 	DeferredHandle,
 	Model,
 	ModelCostRates,
+	ModelSimpleStreamOptions,
 	ModelThinkingLevel,
 	ProviderHeaders,
 	ProviderRequestOptions,
@@ -81,9 +82,23 @@ export interface ModelsRequestTransforms {
 }
 
 export type ModelsApiStreamOptions<TApi extends Api> = ApiStreamOptions<TApi> & ModelsRequestTransforms;
-export type ModelsSimpleStreamOptions = SimpleStreamOptions & ModelsRequestTransforms;
+/** Model-aware simple options with Models-only request transforms. */
+export type ModelsSimpleStreamOptions = ModelSimpleStreamOptions & ModelsRequestTransforms;
 export type ModelsDeferredFetchOptions = DeferredFetchOptions & ModelsRequestTransforms;
 export type ModelsDeferredCancelOptions = DeferredCancelOptions & ModelsRequestTransforms;
+
+/** Resolve a model-aware thinking request into the effective options a provider adapter accepts. */
+export function resolveModelSimpleStreamOptions(
+	model: Model<Api>,
+	options?: ModelSimpleStreamOptions & ModelsRequestTransforms,
+): SimpleStreamOptions & ModelsRequestTransforms {
+	const { reasoning = "off", ...providerOptions } = options ?? {};
+	const effectiveReasoning = clampThinkingLevel(model, reasoning);
+
+	// Provider adapters treat an absent effort as thinking off; unsupported off requests reach
+	// them as the model's nearest supported level instead of an impossible disabled payload.
+	return effectiveReasoning === "off" ? providerOptions : { ...providerOptions, reasoning: effectiveReasoning };
+}
 
 /**
  * A provider is the concrete runtime unit. It owns id/name/base metadata,
@@ -690,7 +705,8 @@ class ModelsImpl implements MutableModels {
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
 			const provider = this.requireProvider(model);
-			const { requestModel, requestOptions } = await this.applyAuth(model, options);
+			const resolvedOptions = resolveModelSimpleStreamOptions(model, options);
+			const { requestModel, requestOptions } = await this.applyAuth(model, resolvedOptions);
 			return provider.streamSimple(requestModel, context, requestOptions as SimpleStreamOptions);
 		});
 	}

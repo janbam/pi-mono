@@ -33,6 +33,7 @@ import {
 	type Provider,
 	type ProviderHeaders,
 	type ProviderRequestOptions,
+	resolveModelSimpleStreamOptions,
 	type SimpleStreamOptions,
 	type StreamOptions,
 } from "@earendil-works/pi-ai";
@@ -635,7 +636,8 @@ export class ModelRuntime implements Models {
 
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
-			const prepared = await this.prepareRequest(model, options);
+			const resolvedOptions = resolveModelSimpleStreamOptions(model, options);
+			const prepared = await this.prepareRequest(model, resolvedOptions);
 			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);
 		});
 	}
