@@ -293,3 +293,5 @@ npm run check
 # When everything is good, commit and push
 git push origin main
 ```
+
+When landing a PR and when merging updates from upstream always read JANBAM_DOCS/FORK_MOD.md and keep all fork divergence documented there!
