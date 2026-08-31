@@ -2,6 +2,25 @@
 
 Deliberate behavioral divergences of this fork (`yannbam/pi-mono`) from upstream. Each entry records what changed, why, and where the change lives.
 
+## OpenCode Go model costs come from the Go pricing page, scaled by usage allowance
+
+Upstream behavior: opencode-go model costs are models.dev's nominal per-1M prices (which also drop the page's context-tier and Peak/Off-Peak rows, and can lag the docs page).
+
+Fork behavior: during model generation, the generator fetches https://opencode.ai/docs/go/, locates the pricing table by its header row (Model / Input / Output / Cached Read / Cached Write / Usage — the only table on the page with those columns, with header names driving per-row column indexing), and replaces every opencode-go cost with the page's base-row prices (plain, "≤ N tokens", or Off-Peak) scaled by `60 / usage-allowance`. The multiplier normalizes per-token cost to how fast a model drains its monthly allowance: $60-usage models keep the nominal price, $30-usage models double, $15-usage models quadruple (e.g. grok-4.6 input $2 → $8, GLM-5.3 $1.40 → $5.60). The Usage column is authoritative for every model — per-model annotations elsewhere (e.g. models.dev's "(2x usage)" naming for GLM-5.3-Flash) are deliberately ignored, no special cases.
+
+Scope and guards:
+
+- Only the `opencode-go` provider; `opencode` (Zen) keeps models.dev costs.
+- A registered model with no page row keeps its models.dev cost (warned in generator output) so the catalog never loses a model over pricing.
+- Strict generator runs fail the build if the page is unreachable or the table cannot be found/parsed; non-strict runs fall back to models.dev costs.
+- The pricing fetch only happens when the models.dev catalog actually lists opencode-go models, so fetch-mocked generator tests never see it.
+
+Implementation:
+
+- Pure parser, name normalizer, and usage-scaling cost helper: `packages/ai/scripts/opencode-go-pricing.ts`
+- Fetch + override wiring in the OpenCode variant loop: `packages/ai/scripts/generate-models.ts` (`fetchOpenCodeGoPricing`, `opencodeGoPricing`, `goPricingRow`)
+- Tests: `packages/ai/test/opencode-go-pricing.test.ts` (parser units, cost scaling, strict generator integration with mocked fetches)
+
 ## /tree: Enter navigates directly, tab opens the summary menu
 
 Upstream behavior: confirming a navigation target in `/tree` always prompts "Summarize branch?" (No summary / Summarize / Summarize with custom prompt) unless the `branchSummary.skipPrompt` setting suppresses it.
