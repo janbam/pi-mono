@@ -3,6 +3,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import {
+	getOpenCodeGoUsageAdjustedCost,
+	normalizeOpenCodeGoModelKey,
+	OPENCODE_GO_PRICING_URL,
+	parseOpenCodeGoPricingTable,
+	type OpenCodeGoPricingRow,
+} from "./opencode-go-pricing.ts";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
 import {
 	CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL,
@@ -1442,6 +1449,24 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 	return models;
 }
 
+/**
+ * JANBAM fork mod: fetch the OpenCode Go pricing table. Strict mode treats any
+ * failure as a build error; non-strict runs keep models.dev costs for the
+ * provider instead.
+ */
+async function fetchOpenCodeGoPricing(): Promise<Map<string, OpenCodeGoPricingRow>> {
+	try {
+		console.log("Fetching OpenCode Go pricing from", OPENCODE_GO_PRICING_URL);
+		const response = await fetch(OPENCODE_GO_PRICING_URL);
+		if (!response.ok) throw new Error(`OpenCode Go docs returned ${response.status}`);
+		return parseOpenCodeGoPricingTable(await response.text());
+	} catch (error) {
+		console.error("Failed to fetch OpenCode Go pricing:", error);
+		if (generatorOptions.strict) throw error;
+		return new Map();
+	}
+}
+
 async function loadModelsDevData(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from models.dev API...");
@@ -1928,6 +1953,13 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 		models.push(...processBasetenModels(data.baseten));
 
+		// JANBAM fork mod: fetch Go pricing only when the catalog actually lists
+		// opencode-go models, so fixture-driven generator runs without that
+		// provider never touch the network for it.
+		const opencodeGoPricing = data["opencode-go"]?.models
+			? await fetchOpenCodeGoPricing()
+			: new Map<string, OpenCodeGoPricingRow>();
+
 		// Process OpenCode models (Zen and Go)
 		// API mapping based on provider.npm field:
 		// - @ai-sdk/openai → openai-responses
@@ -2020,6 +2052,20 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
+				// JANBAM fork mod: opencode-go costs come from the Go pricing page,
+				// scaled by usage allowance, instead of models.dev's nominal prices.
+				// The provider gate matters: Zen can carry the same model id (e.g.
+				// grok-4.6), which must never match a Go pricing row. A model missing
+				// from the page keeps its models.dev cost so the catalog never loses a
+				// model over pricing.
+				const isGoVariant = variant.provider === "opencode-go";
+				const goPricingRow = isGoVariant
+					? opencodeGoPricing.get(normalizeOpenCodeGoModelKey(modelId))
+					: undefined;
+				if (isGoVariant && !goPricingRow) {
+					console.warn(`OpenCode Go pricing page has no row for ${modelId}; keeping models.dev cost`);
+				}
+
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -2028,12 +2074,14 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					baseUrl,
 					reasoning: m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
-					cost: {
-						input: m.cost?.input || 0,
-						output: m.cost?.output || 0,
-						cacheRead: m.cost?.cache_read || 0,
-						cacheWrite: m.cost?.cache_write || 0,
-					},
+					cost: goPricingRow
+						? getOpenCodeGoUsageAdjustedCost(goPricingRow)
+						: {
+								input: m.cost?.input || 0,
+								output: m.cost?.output || 0,
+								cacheRead: m.cost?.cache_read || 0,
+								cacheWrite: m.cost?.cache_write || 0,
+							},
 					...(compat ? { compat } : {}),
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
