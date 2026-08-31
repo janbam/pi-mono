@@ -37,7 +37,7 @@ export type RpcCommand =
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
-	| { id?: string; type: "cycle_thinking_level" }
+	| { id?: string; type: "cycle_thinking_level"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_thinking_levels" }
 
 	// Queue modes

@@ -320,10 +320,11 @@ Response:
 
 #### cycle_thinking_level
 
-Cycle through available thinking levels. Returns `null` data if model doesn't support thinking.
+Cycle through available thinking levels. Returns `null` data if model doesn't support thinking. Optional `direction`: `"forward"` (default) or `"backward"`.
 
 ```json
 {"type": "cycle_thinking_level"}
+{"type": "cycle_thinking_level", "direction": "backward"}
 ```
 
 Response:

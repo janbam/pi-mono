@@ -284,9 +284,10 @@ export class RpcClient {
 
 	/**
 	 * Cycle thinking level.
+	 * @param direction - "forward" (default) or "backward"
 	 */
-	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
-		const response = await this.send({ type: "cycle_thinking_level" });
+	async cycleThinkingLevel(direction: "forward" | "backward" = "forward"): Promise<{ level: ThinkingLevel } | null> {
+		const response = await this.send({ type: "cycle_thinking_level", direction });
 		return this.getData(response);
 	}
 

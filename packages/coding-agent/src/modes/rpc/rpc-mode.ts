@@ -521,7 +521,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "cycle_thinking_level": {
-				const level = session.cycleThinkingLevel();
+				const level = session.cycleThinkingLevel(command.direction);
 				if (!level) {
 					return success(id, "cycle_thinking_level", null);
 				}

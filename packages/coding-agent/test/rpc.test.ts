@@ -207,6 +207,11 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 		// Verify via state
 		const newState = await client.getState();
 		expect(newState.thinkingLevel).toBe(result!.level);
+
+		// Backward cycling returns to the level we started from
+		const backward = await client.cycleThinkingLevel("backward");
+		expect(backward).toBeDefined();
+		expect(backward!.level).toBe(initialLevel);
 	}, 30000);
 
 	test("should get available thinking levels", async () => {

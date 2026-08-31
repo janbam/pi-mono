@@ -30,6 +30,15 @@ export class CustomEditor extends Editor {
 	}
 
 	handleInput(data: string): void {
+		// Raw 0x08 is ambiguous between Ctrl+H and Backspace/Ctrl+Backspace in
+		// legacy control-byte encoding. Route it to the editor unconditionally so
+		// Backspace keeps working; ctrl+h bindings (app or extension) only fire on
+		// enhanced encodings (Kitty/CSI u).
+		if (data === "\x08") {
+			super.handleInput(data);
+			return;
+		}
+
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {
 			return;

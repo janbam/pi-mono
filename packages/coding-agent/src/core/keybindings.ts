@@ -19,6 +19,7 @@ export interface AppKeybindings {
 	"app.exit": true;
 	"app.suspend": true;
 	"app.thinking.cycle": true;
+	"app.thinking.cycleBackward": true;
 	"app.model.cycleForward": true;
 	"app.model.cycleBackward": true;
 	"app.model.select": true;
@@ -113,8 +114,12 @@ export const KEYBINDINGS = {
 		description: "Suspend to background",
 	},
 	"app.thinking.cycle": {
-		defaultKeys: "shift+tab",
-		description: "Cycle thinking level",
+		defaultKeys: "ctrl+t",
+		description: "Cycle to next thinking level",
+	},
+	"app.thinking.cycleBackward": {
+		defaultKeys: "ctrl+alt+t",
+		description: "Cycle to previous thinking level",
 	},
 	"app.model.cycleForward": {
 		defaultKeys: "ctrl+p",
@@ -127,7 +132,7 @@ export const KEYBINDINGS = {
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Open model selector" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": {
-		defaultKeys: "ctrl+t",
+		defaultKeys: "ctrl+h",
 		description: "Toggle thinking blocks",
 	},
 	"app.session.toggleNamedFilter": {

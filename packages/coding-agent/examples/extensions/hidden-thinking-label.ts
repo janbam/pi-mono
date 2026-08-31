@@ -9,7 +9,7 @@
  *
  * Test:
  *   1. Load this extension
- *   2. Hide thinking blocks with Ctrl+T
+ *   2. Hide thinking blocks with Ctrl+H
  *   3. Ask for something that produces reasoning output
  *   4. The collapsed thinking block label will show the custom text
  *

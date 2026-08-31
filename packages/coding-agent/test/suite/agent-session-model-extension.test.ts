@@ -101,6 +101,7 @@ describe("AgentSession model and extension characterization", () => {
 
 		harness.session.setThinkingLevel("off");
 		expect(harness.session.cycleThinkingLevel()).toBe("minimal");
+		expect(harness.session.cycleThinkingLevel("backward")).toBe("off");
 		expect(harness.settingsManager.getDefaultThinkingLevel()).toBe("low");
 	});
 
@@ -217,6 +218,9 @@ describe("AgentSession model and extension characterization", () => {
 		expect(harness.session.cycleThinkingLevel()).toBe("xhigh");
 		expect(harness.session.cycleThinkingLevel()).toBe("max");
 		expect(harness.session.cycleThinkingLevel()).toBe("off");
+		// Backward wraps from off to max and descends the same level order.
+		expect(harness.session.cycleThinkingLevel("backward")).toBe("max");
+		expect(harness.session.cycleThinkingLevel("backward")).toBe("xhigh");
 	});
 
 	it("throws when setModel is called without configured auth", async () => {

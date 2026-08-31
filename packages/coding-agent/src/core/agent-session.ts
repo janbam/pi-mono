@@ -2421,15 +2421,20 @@ export class AgentSession {
 	}
 
 	/**
-	 * Cycle to next thinking level.
+	 * Cycle to the next or previous thinking level.
+	 * @param direction - "forward" (default) or "backward"
 	 * @returns New level, or undefined if model doesn't support thinking
 	 */
-	cycleThinkingLevel(options: ModelMutationOptions = {}): ThinkingLevel | undefined {
+	cycleThinkingLevel(
+		direction: "forward" | "backward" = "forward",
+		options: ModelMutationOptions = {},
+	): ThinkingLevel | undefined {
 		if (!this.supportsThinking()) return undefined;
 
 		const levels = this.getAvailableThinkingLevels();
+		const len = levels.length;
 		const currentIndex = levels.indexOf(this.thinkingLevel);
-		const nextIndex = (currentIndex + 1) % levels.length;
+		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const nextLevel = levels[nextIndex];
 
 		this.setThinkingLevel(nextLevel, options);

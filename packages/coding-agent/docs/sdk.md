@@ -90,7 +90,7 @@ interface AgentSession {
   setModel(model: Model): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
   cycleModel(): Promise<ModelCycleResult | undefined>;
-  cycleThinkingLevel(): ThinkingLevel | undefined;
+  cycleThinkingLevel(direction?: "forward" | "backward"): ThinkingLevel | undefined;
 
   // State access
   agent: Agent;
