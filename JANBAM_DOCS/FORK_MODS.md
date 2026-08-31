@@ -2,6 +2,28 @@
 
 Deliberate behavioral divergences of this fork (`yannbam/pi-mono`) from upstream. Each entry records what changed, why, and where the change lives.
 
+## Extensions can persist session-global state outside the conversation tree
+
+Upstream behavior: extension persistence uses branch-local custom entries or external sidecar files. Tree navigation can roll custom-entry state backward, while sidecars require extensions to own session identity and lifecycle handling.
+
+Fork behavior: extensions can read and write durable JSON values through `pi.getSessionState(key)` and `pi.setSessionState(key, value)`. Keys share one open last-write-wins namespace with no ownership restrictions. State records are append-only session metadata outside the conversation tree, transcript, compaction input, and model context, so `/tree` never rolls them back.
+
+Lifecycle semantics:
+
+- Resume, reload, switch, and import replay state in physical file order.
+- New sessions start empty.
+- Forks, clones, and branch JSONL exports inherit one effective snapshot per key. Outgoing `session_shutdown` writes remain source-only because derivation occurs before shutdown.
+- Validation or persistence failure leaves the last durable value unchanged; non-finite numbers are rejected recursively.
+- State uses a `type: "session"` metadata envelope so older version 3 readers skip it instead of misclassifying it as a tree entry. Temporary flat `session_state` records are normalized on load.
+
+Implementation:
+
+- Storage, replay, compatibility normalization, derivation, and public data types: `packages/coding-agent/src/core/session-manager.ts`, `src/core/session-export.ts`
+- Runtime lifecycle ordering: `packages/coding-agent/src/core/agent-session-runtime.ts`
+- Extension API and bindings: `packages/coding-agent/src/core/extensions/`, `src/core/agent-session.ts`, `src/index.ts`
+- Tests: `packages/coding-agent/test/session-manager/session-state.test.ts`, `test/extensions-runner.test.ts`, `test/suite/agent-session-runtime.test.ts`
+- Docs and example: `packages/coding-agent/docs/extensions.md`, `docs/session-format.md`, `docs/sessions.md`, `examples/extensions/session-state.ts`
+
 ## OpenCode Go model costs come from the Go pricing page, scaled by usage allowance
 
 Upstream behavior: opencode-go model costs are models.dev's nominal per-1M prices (which also drop the page's context-tier and Peak/Off-Peak rows, and can lag the docs page).
