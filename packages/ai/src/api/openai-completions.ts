@@ -821,7 +821,13 @@ function buildParams(
 			thinking?: { type: "enabled" | "disabled"; clear_thinking?: boolean };
 			reasoning_effort?: string;
 		};
-		zaiParams.thinking = options?.reasoningEffort ? { type: "enabled", clear_thinking: false } : { type: "disabled" };
+		// OpenCode routes reject the z-ai `clear_thinking` field; omit it while keeping the rest of the shape intact.
+		const supportsClearThinking = model.provider !== "opencode" && model.provider !== "opencode-go";
+		zaiParams.thinking = options?.reasoningEffort
+			? supportsClearThinking
+				? { type: "enabled", clear_thinking: false }
+				: { type: "enabled" }
+			: { type: "disabled" };
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			const mappedEffort = model.thinkingLevelMap?.[options.reasoningEffort];
 			const effort = mappedEffort === undefined ? options.reasoningEffort : mappedEffort;

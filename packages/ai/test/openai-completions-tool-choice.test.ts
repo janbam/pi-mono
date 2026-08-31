@@ -343,6 +343,7 @@ describe("openai-completions tool_choice", () => {
 		"clamps off and maps $name thinking levels to its native request shape",
 		async ({ model }) => {
 			const usesOpenRouterFormat = model.provider === "openrouter";
+			const omitsClearThinking = model.provider === "opencode-go";
 
 			// Omitted and explicit off are both caller intent; the compat path must resolve them before
 			// the adapter sees the request, so this always-thinking family starts at low.
@@ -354,7 +355,11 @@ describe("openai-completions tool_choice", () => {
 				{ requested: "max", effective: "max" },
 			] as const) {
 				const params = await captureSimpleParams(model, requested);
-				if (!usesOpenRouterFormat) {
+				if (omitsClearThinking) {
+					expect(params.thinking).toEqual({ type: "enabled" });
+					expect(params.reasoning).toBeUndefined();
+					expect(params.reasoning_effort).toBe(effective);
+				} else if (!usesOpenRouterFormat) {
 					expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
 					expect(params.reasoning).toBeUndefined();
 					expect(params.reasoning_effort).toBe(effective);
@@ -405,7 +410,8 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
-	// JANBAM fork mod: OpenCode Go GLM models emit the z-ai thinking shape.
+	// JANBAM fork mod: OpenCode Go GLM models emit the z-ai thinking shape
+	// minus `clear_thinking`, which the OpenCode endpoints reject.
 	it("maps OpenCode Go GLM thinking to the z-ai request shape", async () => {
 		const model = getModel("opencode-go", "glm-5.2")!;
 		const cases = [
@@ -437,9 +443,40 @@ describe("openai-completions tool_choice", () => {
 			).result();
 
 			const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
-			expect(params.thinking).toEqual({ type: "enabled", clear_thinking: false });
+			expect(params.thinking).toEqual({ type: "enabled" });
 			expect(params.reasoning_effort).toBe(testCase.effort);
 		}
+	});
+
+	// JANBAM fork mod: the OpenCode provider rejects `clear_thinking` too.
+	it("omits clear_thinking for OpenCode z-ai thinking models", async () => {
+		const baseModel = getModel("opencode-go", "glm-5.2")!;
+		const model = { ...baseModel, provider: "opencode" as const };
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [
+					{
+						role: "user",
+						content: "Hi",
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				apiKey: "test",
+				reasoning: "high",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { thinking?: unknown; reasoning_effort?: string };
+		expect(params.thinking).toEqual({ type: "enabled" });
+		expect(params.reasoning_effort).toBe("high");
 	});
 
 	it("preserves z.ai thinking when replaying reasoning_content", async () => {
