@@ -121,6 +121,7 @@ cp permission-gate.ts ~/.pi/agent/extensions/
 | Extension | Description |
 |-----------|-------------|
 | `session-name.ts` | Name sessions for the session selector via `setSessionName` |
+| `session-state.ts` | Durable session-global JSON state outside the conversation tree via `getSessionState` / `setSessionState` |
 | `bookmark.ts` | Bookmark entries with labels for `/tree` navigation via `setLabel` |
 
 ### Custom Providers
@@ -193,7 +194,7 @@ action: StringEnum(["list", "add"] as const)
 action: Type.Union([Type.Literal("list"), Type.Literal("add")])
 ```
 
-**State persistence via details:**
+**Branch-local state persistence via details:**
 ```typescript
 // Store state in tool result details for proper forking support
 return {
@@ -211,3 +212,5 @@ pi.on("session_start", async (_event, ctx) => {
   }
 });
 ```
+
+Use `pi.setSessionState(key, value)` instead when the value belongs to the whole session and `/tree` navigation must not roll it back. Read it with `pi.getSessionState(key)` or `ctx.sessionManager.getSessionState(key)` during `session_start`.

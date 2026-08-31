@@ -12,7 +12,7 @@ Extensions are TypeScript modules that extend pi's behavior. They can subscribe 
 - **User interaction** - Prompt users via `ctx.ui` (select, confirm, input, notify)
 - **Custom UI components** - Full TUI components with keyboard input via `ctx.ui.custom()` for complex interactions
 - **Custom commands** - Register commands like `/mycommand` via `pi.registerCommand()`
-- **Session persistence** - Store state that survives restarts via `pi.appendEntry()`
+- **Session persistence** - Store session-global settings with `pi.getSessionState()` / `pi.setSessionState()`, or branch-local history with `pi.appendEntry()`
 - **Custom rendering** - Control how tool calls/results and messages appear in TUI
 
 **Example use cases:**
@@ -990,6 +990,7 @@ ctx.sessionManager.getEntries()             // All entries
 ctx.sessionManager.getBranch()              // Current branch
 ctx.sessionManager.buildContextEntries()    // Active branch entries with compaction applied
 ctx.sessionManager.getLeafId()              // Current leaf entry ID
+ctx.sessionManager.getSessionState("my-key") // Session-global durable JSON state
 ```
 
 ### ctx.modelRegistry / ctx.model / ctx.thinkingLevel / ctx.scopedModels
@@ -1454,7 +1455,7 @@ See [send-user-message.ts](../examples/extensions/send-user-message.ts) for a co
 
 ### pi.appendEntry(customType, data?)
 
-Persist extension data. Custom entries do NOT participate in LLM context. In interactive mode, they can also render inside the chat transcript when paired with `pi.registerEntryRenderer()`.
+Append branch-local extension data to the conversation tree. Custom entries do NOT participate in LLM context, but tree navigation and branch extraction follow their parent links. In interactive mode, they can also render inside the chat transcript when paired with `pi.registerEntryRenderer()`.
 
 ```typescript
 pi.appendEntry("my-state", { count: 42 });
@@ -1464,11 +1465,37 @@ pi.appendEntry("status-card", { title: "Indexed files", count: 17 });
 pi.on("session_start", async (_event, ctx) => {
   for (const entry of ctx.sessionManager.getEntries()) {
     if (entry.type === "custom" && entry.customType === "my-state") {
-      // Reconstruct from entry.data
+      // Reconstruct branch-local state from entry.data
     }
   }
 });
 ```
+
+For one value that must stay global while `/tree` moves between branches, use session-global state instead.
+
+### pi.getSessionState(key) / pi.setSessionState(key, value)
+
+Read or write durable JSON state that belongs to the session as a whole, outside the conversation tree and model context.
+
+```typescript
+type MyState = { enabled: boolean };
+const STATE_KEY = "my-extension.settings";
+
+pi.on("session_start", (_event, ctx) => {
+  const state = ctx.sessionManager.getSessionState<MyState>(STATE_KEY);
+  // Reconstruct in-memory behavior from state.
+});
+
+pi.setSessionState(STATE_KEY, { enabled: true });
+const state = pi.getSessionState<MyState>(STATE_KEY);
+pi.setSessionState(STATE_KEY, undefined); // Clear the key
+```
+
+The namespace is deliberately open. Keys do not establish ownership: multiple extensions may read or overwrite the same key, and the latest appended write wins. Values may be any JSON value, including objects, arrays, primitives, and `null`; `undefined` is reserved for clearing a key. Reads return defensive copies, so mutating a returned object does not persist a change.
+
+State writes are immediately visible and durable. They survive exit, `pi -c`, `/resume`, `/reload`, and `/tree` navigation. New sessions start empty. `/fork`, `/clone`, `--fork`, and branch JSONL export inherit one snapshot of each effective value at the derivation boundary rather than copying obsolete writes. `/import` preserves imported state history and replays its latest values instead of treating the file as a new derivation.
+
+See [session-state.ts](../examples/extensions/session-state.ts) for a complete example.
 
 ### pi.setSessionName(name)
 
@@ -1939,20 +1966,45 @@ pi.registerCommand("my-setup-teardown", {
 
 ## State Management
 
-Extensions with state should store it in tool result `details` for proper branching support:
+Choose storage according to whether branch navigation should change the value.
+
+### Session-global durable state
+
+Use `pi.getSessionState()` / `pi.setSessionState()` for settings and extension state that belongs to the entire session. These values do not appear in the entry tree, transcript, compaction input, or model context. `/tree` never rolls them back.
+
+```typescript
+type ExtensionState = { enabled: boolean };
+const STATE_KEY = "my-extension.state";
+
+export default function (pi: ExtensionAPI) {
+  let enabled = false;
+
+  pi.on("session_start", (_event, ctx) => {
+    enabled = ctx.sessionManager.getSessionState<ExtensionState>(STATE_KEY)?.enabled ?? false;
+  });
+
+  pi.registerCommand("toggle", {
+    handler: async () => {
+      enabled = !enabled;
+      pi.setSessionState(STATE_KEY, { enabled });
+    },
+  });
+}
+```
+
+### Branch-local state
+
+Store branch-dependent tool state in tool result `details`, or append custom entries with `pi.appendEntry()`. Reconstruct it from `ctx.sessionManager.getBranch()` so `/tree` restores the value at the selected branch point.
 
 ```typescript
 export default function (pi: ExtensionAPI) {
   let items: string[] = [];
 
-  // Reconstruct state from session
   pi.on("session_start", async (_event, ctx) => {
     items = [];
     for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type === "message" && entry.message.role === "toolResult") {
-        if (entry.message.toolName === "my_tool") {
-          items = entry.message.details?.items ?? [];
-        }
+      if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "my_tool") {
+        items = entry.message.details?.items ?? [];
       }
     }
   });
@@ -1964,7 +2016,7 @@ export default function (pi: ExtensionAPI) {
       items.push("new item");
       return {
         content: [{ type: "text", text: "Added" }],
-        details: { items: [...items] },  // Store for reconstruction
+        details: { items: [...items] },
       };
     },
   });
@@ -3076,6 +3128,7 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `event-bus.ts` | Inter-extension events | `pi.events` |
 | **Session Metadata** |||
 | `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
+| `session-state.ts` | Store JSON state outside the conversation tree | `getSessionState`, `setSessionState` |
 | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |
 | `tree-shortcut.ts` | Shortcut that fires inside `/tree` and rewrites the selected prompt | `registerShortcut` with `contexts: ["tree"]` |
 | **Misc** |||

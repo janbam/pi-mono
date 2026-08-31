@@ -91,6 +91,7 @@ export type {
 	GetActiveToolsHandler,
 	GetAllToolsHandler,
 	GetCommandsHandler,
+	GetSessionStateHandler,
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
@@ -154,6 +155,7 @@ export type {
 	SetActiveToolsHandler,
 	SetLabelHandler,
 	SetModelHandler,
+	SetSessionStateHandler,
 	SetThinkingLevelHandler,
 	TerminalInputHandler,
 	// Events - Tool

@@ -293,9 +293,15 @@ export class AgentSessionRuntime {
 				throw new Error("Persisted session is missing a session file");
 			}
 			const sessionDir = this.session.sessionManager.getSessionDir();
-			if (!targetLeafId) {
-				const sessionManager = SessionManager.create(this.cwd, sessionDir);
-				sessionManager.newSession({ parentSession: currentSessionFile });
+			if (!existsSync(currentSessionFile)) {
+				if (targetLeafId !== null) {
+					throw new Error(
+						"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
+					);
+				}
+
+				// An empty unsaved conversation has no durable state to inherit, so preserve the existing root-fork path.
+				const sessionManager = SessionManager.create(this.cwd, sessionDir, { parentSession: currentSessionFile });
 				await this.teardownCurrent("fork", sessionManager.getSessionFile());
 				this.apply(
 					await this.createRuntime({
@@ -307,12 +313,6 @@ export class AgentSessionRuntime {
 				);
 				await this.finishSessionReplacement(options?.withSession);
 				return { cancelled: false, selectedText };
-			}
-
-			if (!existsSync(currentSessionFile)) {
-				throw new Error(
-					"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
-				);
 			}
 			const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
 			const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
@@ -333,11 +333,7 @@ export class AgentSessionRuntime {
 		}
 
 		const sessionManager = this.session.sessionManager;
-		if (!targetLeafId) {
-			sessionManager.newSession({ parentSession: this.session.sessionFile });
-		} else {
-			sessionManager.createBranchedSession(targetLeafId);
-		}
+		sessionManager.createBranchedSession(targetLeafId);
 		await this.teardownCurrent("fork", sessionManager.getSessionFile());
 		this.apply(
 			await this.createRuntime({

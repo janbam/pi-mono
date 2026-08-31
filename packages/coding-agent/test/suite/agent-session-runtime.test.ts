@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
@@ -394,6 +394,23 @@ describe("AgentSessionRuntime characterization", () => {
 		).toEqual(beforeMessages);
 	});
 
+	it("inherits global state on clone and resets it on a new session", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+		runtime.session.sessionManager.setSessionState("mode", { enabled: true });
+
+		await runtime.session.reload();
+		expect(runtime.session.sessionManager.getSessionState("mode")).toEqual({ enabled: true });
+		await runtime.session.prompt("hello");
+		const leafId = runtime.session.sessionManager.getLeafId();
+		if (!leafId) throw new Error("Expected conversation leaf");
+
+		await runtime.fork(leafId, { position: "at" });
+		expect(runtime.session.sessionManager.getSessionState("mode")).toEqual({ enabled: true });
+
+		await runtime.newSession();
+		expect(runtime.session.sessionManager.getSessionState("mode")).toBeUndefined();
+	});
+
 	it("duplicates the current active branch in-memory when forking at the current position", async () => {
 		const tempDir = join(tmpdir(), `pi-runtime-suite-in-memory-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
@@ -509,6 +526,24 @@ describe("AgentSessionRuntime characterization", () => {
 	it("throws when forking with an invalid entry id", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		await expect(runtime.fork("missing-entry")).rejects.toThrow("Invalid entry ID for forking");
+	});
+
+	it("preserves imported state records verbatim and restores their effective value", async () => {
+		const { runtime, tempDir } = await createRuntimeForTest(() => {});
+		const importDir = join(tempDir, "incoming");
+		mkdirSync(importDir, { recursive: true });
+		const imported = SessionManager.create(tempDir, importDir);
+		imported.setSessionState("mode", "old");
+		imported.setSessionState("mode", "latest");
+		const importedFile = imported.getSessionFile();
+		if (!importedFile) throw new Error("Expected import source file");
+		const originalContent = readFileSync(importedFile, "utf8");
+
+		await runtime.importFromJsonl(importedFile);
+
+		expect(runtime.session.sessionManager.getSessionState("mode")).toBe("latest");
+		const relocatedContent = readFileSync(runtime.session.sessionFile!, "utf8");
+		expect(relocatedContent.startsWith(originalContent)).toBe(true);
 	});
 
 	it("updates the runtime session cwd on cross-cwd session replacement", async () => {

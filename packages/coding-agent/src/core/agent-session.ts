@@ -3119,6 +3119,8 @@ export class AgentSession {
 						this._emit({ type: "entry_appended", entry });
 					}
 				},
+				getSessionState: (key) => this.sessionManager.getSessionState(key),
+				setSessionState: (key, value) => this.sessionManager.setSessionState(key, value),
 				setSessionName: (name) => {
 					this.setSessionName(name);
 				},

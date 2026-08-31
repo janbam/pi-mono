@@ -259,6 +259,11 @@ export function exportSessionToJsonl(
 	};
 	const lines = [JSON.stringify(header)];
 
+	// Export one effective record per key without leaking obsolete state history into the derived file.
+	for (const [key, value] of Object.entries(sessionManager.getSessionStateSnapshot())) {
+		lines.push(JSON.stringify({ type: "session_state", timestamp, key, value }));
+	}
+
 	let parentId: string | null = null;
 	for (const entry of sessionManager.getBranch()) {
 		lines.push(JSON.stringify({ ...entry, parentId }));

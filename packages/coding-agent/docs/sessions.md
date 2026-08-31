@@ -19,6 +19,8 @@ Use `/session` in interactive mode to see the current session file, session ID, 
 
 For the JSONL file format and SessionManager API, see [Session Format](session-format.md).
 
+Extensions can also store session-global JSON values in the session file. This state is outside the conversation tree: `/tree` does not roll it backward and it is never sent to the model. New sessions start empty; `/fork`, `/clone`, CLI `--fork`, and branch JSONL exports inherit only the effective latest value for each key.
+
 ## Session Commands
 
 | Command | Description |
@@ -123,6 +125,7 @@ Selecting the root user message resets the leaf to an empty conversation and pla
 | View | Full tree | User-message selector | Current active branch |
 | Typical use | Explore alternatives in place | Start a new session from an earlier prompt | Duplicate current work before continuing |
 | Summary | Optional branch summary | None | None |
+| Session-global extension state | Unchanged | Effective values inherited | Effective values inherited |
 
 Use `/tree` when you want to keep alternatives together. Use `/fork` or `/clone` when you want a separate session file.
 
