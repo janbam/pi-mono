@@ -30,6 +30,7 @@ import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
 import { readPiManifest } from "../pi-manifest.ts";
+import type { JsonValue } from "../session-manager.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
@@ -193,6 +194,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendUserMessage: notInitialized,
 		executeTool: () => Promise.reject(new Error("Extension runtime not initialized")),
 		appendEntry: notInitialized,
+		getSessionState: notInitialized,
+		setSessionState: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
@@ -385,6 +388,16 @@ function createExtensionAPI(
 		appendEntry(customType: string, data?: unknown): void {
 			assertActive();
 			runtime.appendEntry(customType, data);
+		},
+
+		getSessionState<T extends JsonValue = JsonValue>(key: string): T | undefined {
+			assertActive();
+			return runtime.getSessionState<T>(key);
+		},
+
+		setSessionState(key: string, value: JsonValue | undefined): void {
+			assertActive();
+			runtime.setSessionState(key, value);
 		},
 
 		setSessionName(name: string): void {

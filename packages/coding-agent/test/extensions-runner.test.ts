@@ -82,6 +82,8 @@ describe("ExtensionRunner", () => {
 			isError: false,
 		}),
 		appendEntry: () => {},
+		getSessionState: (key) => sessionManager.getSessionState(key),
+		setSessionState: (key, value) => sessionManager.setSessionState(key, value),
 		setSessionName: () => {},
 		getSessionName: () => undefined,
 		setLabel: () => {},
@@ -528,6 +530,48 @@ describe("ExtensionRunner", () => {
 			expect(diagnostics).toEqual([]);
 			expect(runner.getCommand("shared-cmd:1")?.description).toBe("First command");
 			expect(runner.getCommand("shared-cmd:2")?.description).toBe("Second command");
+		});
+	});
+
+	describe("session-global state API", () => {
+		it("lets extensions read and overwrite the same key through the bound API", async () => {
+			const firstPath = path.join(extensionsDir, "state-first.ts");
+			const secondPath = path.join(extensionsDir, "state-second.ts");
+			fs.writeFileSync(
+				firstPath,
+				`export default function(pi) {
+	pi.registerCommand("write-first", {
+		handler: async () => pi.setSessionState("shared", { writer: "first" }),
+	});
+}`,
+			);
+			fs.writeFileSync(
+				secondPath,
+				`export default function(pi) {
+	pi.registerCommand("overwrite-second", {
+		handler: async () => {
+			pi.setSessionState("observed", pi.getSessionState("shared"));
+			pi.setSessionState("shared", { writer: "second" });
+		},
+	});
+	pi.on("session_start", (_event, ctx) => {
+		pi.setSessionState("seen-at-start", ctx.sessionManager.getSessionState("shared"));
+	});
+}`,
+			);
+
+			const result = await loadExtensions([firstPath, secondPath], tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(extensionActions, extensionContextActions);
+			const ctx = runner.createCommandContext();
+
+			await runner.getCommand("write-first")?.handler("", ctx);
+			await runner.getCommand("overwrite-second")?.handler("", ctx);
+			await runner.emit({ type: "session_start", reason: "startup" });
+
+			expect(sessionManager.getSessionState("observed")).toEqual({ writer: "first" });
+			expect(sessionManager.getSessionState("shared")).toEqual({ writer: "second" });
+			expect(sessionManager.getSessionState("seen-at-start")).toEqual({ writer: "second" });
 		});
 	});
 

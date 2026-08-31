@@ -59,6 +59,7 @@ import type {
 	BranchSummaryEntry,
 	CompactionEntry,
 	CustomEntry,
+	JsonValue,
 	ReadonlySessionManager,
 	SessionEntry,
 	SessionManager,
@@ -1362,8 +1363,14 @@ export interface ExtensionAPI {
 		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): void;
 
-	/** Append a custom entry to the session for state persistence (not sent to LLM). */
+	/** Append a branch-local custom entry to the conversation tree (not sent to the LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
+
+	/** Read the latest session-global durable JSON value for a shared key. */
+	getSessionState<T extends JsonValue = JsonValue>(key: string): T | undefined;
+
+	/** Set a session-global durable JSON value, or clear the key with `undefined`. */
+	setSessionState(key: string, value: JsonValue | undefined): void;
 
 	// =========================================================================
 	// Session Metadata
@@ -1720,6 +1727,10 @@ export type ExecuteToolHandler = (
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
+export type GetSessionStateHandler = <T extends JsonValue = JsonValue>(key: string) => T | undefined;
+
+export type SetSessionStateHandler = (key: string, value: JsonValue | undefined) => void;
+
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
@@ -1783,6 +1794,8 @@ export interface ExtensionActions {
 	sendUserMessage: SendUserMessageHandler;
 	executeTool: ExecuteToolHandler;
 	appendEntry: AppendEntryHandler;
+	getSessionState: GetSessionStateHandler;
+	setSessionState: SetSessionStateHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;
