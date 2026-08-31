@@ -31,4 +31,26 @@ describe("CustomEditor prompt history keybindings", () => {
 		editor.handleInput("\x0e"); // Ctrl+N
 		expect(editor.getText()).toBe("draft");
 	});
+
+	it("keeps raw backspace bytes away from the ctrl+h thinking toggle", () => {
+		const keybindings = new KeybindingsManager();
+		setKeybindings(keybindings);
+		const editor = new CustomEditor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme, keybindings);
+		let toggles = 0;
+		editor.onAction("app.thinking.toggle", () => {
+			toggles++;
+		});
+		editor.setText("abc");
+
+		// Legacy raw 0x08 is ambiguous (Backspace on many terminals, Ctrl+H in
+		// control-byte encoding), so it must stay in the editor's backspace path.
+		editor.handleInput("\x08");
+		expect(editor.getText()).toBe("ab");
+		expect(toggles).toBe(0);
+
+		// Unambiguous Kitty/CSI-u encoding of Ctrl+H fires the app action.
+		editor.handleInput("\x1b[104;5u");
+		expect(toggles).toBe(1);
+		expect(editor.getText()).toBe("ab");
+	});
 });

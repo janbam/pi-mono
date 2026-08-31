@@ -40,3 +40,11 @@ describe("Windows keybinding defaults", () => {
 		expect(KEYBINDINGS["app.message.dequeue"].defaultKeys).toBe(windowsKeybindings ? "alt+q" : "alt+up");
 	});
 });
+
+describe("Thinking keybindings", () => {
+	it("moves thinking visibility to ctrl+h and thinking cycling to ctrl+t", () => {
+		expect(KEYBINDINGS["app.thinking.toggle"].defaultKeys).toBe("ctrl+h");
+		expect(KEYBINDINGS["app.thinking.cycle"].defaultKeys).toBe("ctrl+t");
+		expect(KEYBINDINGS["app.thinking.cycleBackward"].defaultKeys).toBe("ctrl+alt+t");
+	});
+});

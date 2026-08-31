@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `AgentSession.cycleThinkingLevel()` now takes `(direction?, options?)`. SDK callers that passed an options object as the first argument must pass a direction (or `undefined`) first.
+
 ### Added
 
 - Added `--log-api-requests <file>` to record every outgoing provider API request (URL, method, redacted headers, full request body, response status, duration) as JSONL for debugging. Captures the wire-level payload of all fetch-based providers; Amazon Bedrock (node:http transport) is not covered.
@@ -11,10 +15,13 @@
 - Added janbam fork-owned RPC commands `get_all_tools` and `execute_tool` so controlled hosts can discover and execute registered Pi tools without adding the command or result to conversation context.
 - Added opt-in Claude prompt-cache warming for all `anthropic-messages` models with `--keep-cache-warm`/`-kw`, `/warm`, verified active-branch lease recovery across resumed sessions, exact foreground prompt/thinking reuse, and an idle duration/cost display. Maintenance starts only after a successful foreground request establishes a cache lease.
 - Added foreground agent-run usage summaries with uncached input, output, cache reads, cache writes, and total cost; compaction and branch-summary usage remains separate.
+- Added backward thinking level cycling via `app.thinking.cycleBackward` (default `Ctrl+Alt+T`, distinguishable from `Ctrl+T` in legacy terminal encoding); `Ctrl+T` cycles forward.
+- Added optional `direction` (`"forward"`/`"backward"`) to RPC `cycle_thinking_level` and `RpcClient.cycleThinkingLevel()`.
 
 ### Changed
 
 - Changed `/tree` navigation: `enter` now navigates to the selected entry directly without a summary prompt; `tab` navigates and opens the branch summary menu. The `branchSummary.skipPrompt` setting no longer has an effect.
+- Changed default thinking keybindings: `Ctrl+H` toggles thinking block visibility (was `Ctrl+T`), and `Ctrl+T` cycles the thinking level (was `Shift+Tab`). The raw `0x08` backspace byte is never claimed by app actions, so Backspace keeps working in terminals that send BS; `Ctrl+H` fires via enhanced encodings (Kitty/CSI u).
 
 ### Fixed
 

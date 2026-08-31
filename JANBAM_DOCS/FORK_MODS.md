@@ -101,6 +101,24 @@ Implementation:
 - Extension docs: `packages/coding-agent/docs/extensions.md`
 - Regression coverage: `packages/ai/test/models-simple-reasoning.test.ts`, `packages/ai/test/openai-completions-tool-choice.test.ts`, `packages/ai/test/zai-coding-plan-models.test.ts`, `packages/coding-agent/test/model-runtime-auth-options.test.ts`
 
+## Thinking keybindings rebound; backward cycling added
+
+Upstream behavior: `app.thinking.cycle` is `shift+tab`, `app.thinking.toggle` is `ctrl+t`, and thinking level cycling is forward-only.
+
+Fork behavior: `app.thinking.toggle` is `ctrl+h`, `app.thinking.cycle` is `ctrl+t`, and the new `app.thinking.cycleBackward` (default `ctrl+alt+t`) steps down the available level list. `AgentSession.cycleThinkingLevel(direction?)` and RPC `cycle_thinking_level` / `RpcClient.cycleThinkingLevel(direction?)` accept an optional direction; omitted direction cycles forward.
+
+`ctrl+alt+t` was chosen over `ctrl+shift+t` because the legacy encoding (ESC prefix + control byte) distinguishes Ctrl+Alt+T from plain Ctrl+T in every terminal, while Ctrl+Shift+T is indistinguishable from Ctrl+T without the Kitty keyboard protocol (see the reverted keybinding experiment below for a related failure).
+
+Implementation:
+
+- Defaults and action id: `packages/coding-agent/src/core/keybindings.ts`
+- Direction-aware cycling: `packages/coding-agent/src/core/agent-session.ts`
+- Interactive dispatch, startup hints, help overlay: `packages/coding-agent/src/modes/interactive/interactive-mode.ts`
+- Extension conflict allowlist: `packages/coding-agent/src/core/extensions/runner.ts`
+- RPC command and client: `packages/coding-agent/src/modes/rpc/rpc-types.ts`, `rpc-client.ts`, `rpc-mode.ts`
+- Tests: `packages/coding-agent/test/keybindings.test.ts`, `test/suite/agent-session-model-extension.test.ts`, `test/rpc-prompt-response-semantics.test.ts`, `test/rpc.test.ts`
+- Docs: `packages/coding-agent/docs/keybindings.md`, `docs/quickstart.md`, `docs/rpc.md`, `README.md`, `CHANGELOG.md`
+
 ## Keybinding experiments that were reverted
 
 An attempt to move the follow-up queueing keybinding (`app.message.followUp`) from `alt+enter` to the four-modifier chord `ctrl+alt+super+a` (emitted by a keyd remap of physical `Alt+Enter`) was reverted: the chord never reliably reached pi. Tested both without tmux and with Kitty-protocol passthrough enabled, so tmux is ruled out as the cause — the loss is in keyd's emitted events or the terminal's encoding of the chord, unresolved. `app.message.followUp` remains at the upstream default `alt+enter` and the keyd remap is unused.

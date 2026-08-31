@@ -152,8 +152,9 @@ This routing remains configurable through the ordinary action bindings. For exam
 | `app.model.select` | `ctrl+l` | Open model selector |
 | `app.model.cycleForward` | `ctrl+p` | Cycle to next model |
 | `app.model.cycleBackward` | `shift+ctrl+p` (`alt+p` on Windows and WSL) | Cycle to previous model |
-| `app.thinking.cycle` | `shift+tab` | Cycle thinking level |
-| `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |
+| `app.thinking.cycle` | `ctrl+t` | Cycle to next thinking level |
+| `app.thinking.cycleBackward` | `ctrl+alt+t` | Cycle to previous thinking level |
+| `app.thinking.toggle` | `ctrl+h` | Collapse or expand thinking blocks |
 
 ### Display and Message Queue
 

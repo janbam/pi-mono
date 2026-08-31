@@ -250,6 +250,62 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 
+	it("cycles thinking levels forward and backward via cycle_thinking_level", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: false,
+			responseDelayMs: 0,
+			model: {
+				id: "fake-model",
+				name: "Fake Model",
+				api: "openai-completions",
+				provider: "fake-provider",
+				baseUrl: "https://example.invalid",
+				reasoning: true,
+				input: [],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 0,
+				maxTokens: 0,
+			},
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "t1", type: "set_thinking_level", level: "high" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({ id: "t1", command: "set_thinking_level", success: true }),
+				);
+			});
+
+			// Backward steps down the level list (high -> medium).
+			lineHandler(JSON.stringify({ id: "t2", type: "cycle_thinking_level", direction: "backward" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({
+						id: "t2",
+						command: "cycle_thinking_level",
+						success: true,
+						data: { level: "medium" },
+					}),
+				);
+			});
+
+			// Omitted direction defaults to forward (medium -> high).
+			lineHandler(JSON.stringify({ id: "t3", type: "cycle_thinking_level" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({
+						id: "t3",
+						command: "cycle_thinking_level",
+						success: true,
+						data: { level: "high" },
+					}),
+				);
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("emits one success response when prompt is queued during streaming", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 100 });
 
