@@ -39,7 +39,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 	async function createRuntimeForTest(
 		extensionFactory: ExtensionFactory,
-		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean },
+		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean; persist?: boolean },
 	) {
 		const tempDir =
 			options?.cwd ?? join(tmpdir(), `pi-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -107,7 +107,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: options?.persist === false ? SessionManager.inMemory(tempDir) : SessionManager.create(tempDir),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -409,6 +409,32 @@ describe("AgentSessionRuntime characterization", () => {
 
 		await runtime.newSession();
 		expect(runtime.session.sessionManager.getSessionState("mode")).toBeUndefined();
+	});
+
+	it("snapshots in-memory fork state before shutdown writes mutate the source", async () => {
+		const { runtime } = await createRuntimeForTest(
+			(pi: ExtensionAPI) => {
+				pi.on("session_shutdown", (event) => {
+					if (event.reason !== "fork") return;
+					pi.setSessionState("mode", "shutdown");
+					pi.setSessionState("shutdown-only", true);
+				});
+			},
+			{ persist: false },
+		);
+		runtime.session.sessionManager.setSessionState("mode", "before-shutdown");
+		await runtime.session.prompt("hello");
+		const sourceManager = runtime.session.sessionManager;
+		const leafId = sourceManager.getLeafId();
+		if (!leafId) throw new Error("Expected conversation leaf");
+
+		await runtime.fork(leafId, { position: "at" });
+
+		expect(sourceManager.getSessionState("mode")).toBe("shutdown");
+		expect(sourceManager.getSessionState("shutdown-only")).toBe(true);
+		expect(runtime.session.sessionManager).not.toBe(sourceManager);
+		expect(runtime.session.sessionManager.getSessionState("mode")).toBe("before-shutdown");
+		expect(runtime.session.sessionManager.getSessionState("shutdown-only")).toBeUndefined();
 	});
 
 	it("duplicates the current active branch in-memory when forking at the current position", async () => {

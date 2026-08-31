@@ -43,16 +43,27 @@ export interface NewSessionOptions {
 	parentSession?: string;
 }
 
-/** A value representable in JSON session records. */
+/** A value representable in JSON session records. Numbers must be finite. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /**
- * Session-global extension state record.
+ * Session-global extension state encoded as session metadata.
  *
- * These records are ordered, append-only facts outside the conversation tree.
- * The latest record for a key wins; an omitted value clears that key.
+ * The `type: "session"` envelope keeps these non-tree records invisible to
+ * pre-state v3 readers. Records are ordered append-only facts; the latest
+ * nested fact for a key wins, and an omitted value clears that key.
  */
 export interface SessionStateEntry {
+	type: "session";
+	timestamp: string;
+	sessionState: {
+		key: string;
+		value?: JsonValue;
+	};
+}
+
+/** Temporary flat encoding emitted before state metadata gained v3-reader compatibility. */
+interface LegacySessionStateEntry {
 	type: "session_state";
 	timestamp: string;
 	key: string;
@@ -170,7 +181,7 @@ export type SessionEntry =
 	| SessionInfoEntry;
 
 /** Raw file entry, including the header and non-tree session-global state records. */
-export type FileEntry = SessionHeader | SessionEntry | SessionStateEntry;
+export type FileEntry = SessionHeader | SessionEntry | SessionStateEntry | LegacySessionStateEntry;
 
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
@@ -245,24 +256,55 @@ function generateId(byId: { has(id: string): boolean }): string {
 	return randomUUID();
 }
 
+/** Distinguish current metadata facts from the first-line session header. */
+function isSessionStateEntry(entry: FileEntry): entry is SessionStateEntry {
+	return entry.type === "session" && "sessionState" in entry;
+}
+
+/** Recognize flat records written by the initial session-state implementation. */
+function isLegacySessionStateEntry(entry: FileEntry): entry is LegacySessionStateEntry {
+	return entry.type === "session_state";
+}
+
+/** Recognize the first-line session header without mistaking metadata facts for it. */
+function isSessionHeader(entry: FileEntry): entry is SessionHeader {
+	return entry.type === "session" && !isSessionStateEntry(entry) && typeof (entry as { id?: unknown }).id === "string";
+}
+
 /** Normalize mutable inputs to the exact JSON value that persistence can replay. */
 function cloneJsonValue<T extends JsonValue>(value: T): T {
-	const serialized = JSON.stringify(value);
+	// Reject every non-finite number before JSON serialization can silently replace it with null.
+	const serialized = JSON.stringify(value, (_key, item: unknown) => {
+		if (typeof item === "number" && !Number.isFinite(item)) {
+			throw new TypeError("Session state values must contain only finite JSON numbers");
+		}
+		return item;
+	});
 	if (serialized === undefined) {
 		throw new TypeError("Session state values must be JSON-compatible");
 	}
 	return JSON.parse(serialized) as T;
 }
 
+/** Read either supported wire encoding as one state fact. */
+function getSessionStateFact(entry: FileEntry): { key: string; value?: JsonValue } | undefined {
+	if (isSessionStateEntry(entry)) return entry.sessionState;
+	if (isLegacySessionStateEntry(entry)) {
+		return { key: entry.key, ...(entry.value === undefined ? {} : { value: entry.value }) };
+	}
+	return undefined;
+}
+
 /** Replay ordered state facts into their effective last-write-wins map. */
 function buildSessionState(entries: readonly FileEntry[]): Map<string, JsonValue> {
 	const state = new Map<string, JsonValue>();
 	for (const entry of entries) {
-		if (entry.type !== "session_state") continue;
-		if (entry.value === undefined) {
-			state.delete(entry.key);
+		const fact = getSessionStateFact(entry);
+		if (!fact) continue;
+		if (fact.value === undefined) {
+			state.delete(fact.key);
 		} else {
-			state.set(entry.key, cloneJsonValue(entry.value));
+			state.set(fact.key, cloneJsonValue(fact.value));
 		}
 	}
 	return state;
@@ -271,11 +313,31 @@ function buildSessionState(entries: readonly FileEntry[]): Map<string, JsonValue
 /** Materialize only effective values when deriving a new session. */
 function createSessionStateSnapshot(state: ReadonlyMap<string, JsonValue>, timestamp: string): SessionStateEntry[] {
 	return Array.from(state, ([key, value]) => ({
-		type: "session_state",
+		type: "session",
 		timestamp,
-		key,
-		value: cloneJsonValue(value),
+		sessionState: { key, value: cloneJsonValue(value) },
 	}));
+}
+
+/** Rewrite the temporary flat state encoding into v3-reader-compatible metadata. */
+function normalizeLegacySessionStateEntries(entries: FileEntry[]): boolean {
+	let changed = false;
+	for (let index = 0; index < entries.length; index++) {
+		const entry = entries[index];
+		if (!isLegacySessionStateEntry(entry)) continue;
+
+		// Preserve physical order and tombstones while changing only the compatibility envelope.
+		entries[index] = {
+			type: "session",
+			timestamp: entry.timestamp,
+			sessionState: {
+				key: entry.key,
+				...(entry.value === undefined ? {} : { value: entry.value }),
+			},
+		};
+		changed = true;
+	}
+	return changed;
 }
 
 /** Migrate v1 → v2: add id/parentId tree structure. Mutates in place. */
@@ -284,11 +346,12 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 	let prevId: string | null = null;
 
 	for (const entry of entries) {
+		// Session metadata is outside every historical conversation format.
+		if (isSessionStateEntry(entry) || isLegacySessionStateEntry(entry)) continue;
 		if (entry.type === "session") {
 			entry.version = 2;
 			continue;
 		}
-		if (entry.type === "session_state") continue;
 
 		entry.id = generateId(ids);
 		entry.parentId = prevId;
@@ -299,7 +362,7 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 			const comp = entry as CompactionEntry & { firstKeptEntryIndex?: number };
 			if (typeof comp.firstKeptEntryIndex === "number") {
 				const targetEntry = entries[comp.firstKeptEntryIndex];
-				if (targetEntry && targetEntry.type !== "session" && targetEntry.type !== "session_state") {
+				if (targetEntry && targetEntry.type !== "session" && !isLegacySessionStateEntry(targetEntry)) {
 					comp.firstKeptEntryId = targetEntry.id;
 				}
 				delete comp.firstKeptEntryIndex;
@@ -311,6 +374,8 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 /** Migrate v2 → v3: rename hookMessage role to custom. Mutates in place. */
 function migrateV2ToV3(entries: FileEntry[]): void {
 	for (const entry of entries) {
+		// Session metadata needs no conversation migration.
+		if (isSessionStateEntry(entry) || isLegacySessionStateEntry(entry)) continue;
 		if (entry.type === "session") {
 			entry.version = 3;
 			continue;
@@ -331,15 +396,21 @@ function migrateV2ToV3(entries: FileEntry[]): void {
  * Mutates entries in place. Returns true if any migration was applied.
  */
 function migrateToCurrentVersion(entries: FileEntry[]): boolean {
-	const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
+	// Normalize the short-lived flat encoding independently of the header version.
+	let changed = normalizeLegacySessionStateEntries(entries);
+	const header = entries.find(isSessionHeader);
 	const version = header?.version ?? 1;
 
-	if (version >= CURRENT_SESSION_VERSION) return false;
+	if (version < 2) {
+		migrateV1ToV2(entries);
+		changed = true;
+	}
+	if (version < 3) {
+		migrateV2ToV3(entries);
+		changed = true;
+	}
 
-	if (version < 2) migrateV1ToV2(entries);
-	if (version < 3) migrateV2ToV3(entries);
-
-	return true;
+	return changed;
 }
 
 /** Exported for testing */
@@ -600,7 +671,7 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	// Validate session header
 	if (entries.length === 0) return entries;
 	const header = entries[0];
-	if (header.type !== "session" || typeof (header as { id?: unknown }).id !== "string") {
+	if (!isSessionHeader(header)) {
 		return [];
 	}
 
@@ -616,7 +687,7 @@ function parseSessionHeaderCandidate(line: string): SessionHeader | null | undef
 	if (!line.trim()) return undefined;
 	const entry = parseSessionEntryLine(line);
 	if (!entry) return undefined;
-	if (entry.type !== "session" || typeof (entry as { id?: unknown }).id !== "string") return null;
+	if (!isSessionHeader(entry)) return null;
 	return entry;
 }
 
@@ -756,7 +827,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			if (!entry) continue;
 
 			if (!header) {
-				if (entry.type !== "session") return null;
+				if (!isSessionHeader(entry)) return null;
 				header = entry;
 				continue;
 			}
@@ -964,7 +1035,7 @@ export class SessionManager {
 				return;
 			}
 
-			const header = this.fileEntries.find((e) => e.type === "session") as SessionHeader | undefined;
+			const header = this.fileEntries.find(isSessionHeader);
 			this.sessionId = header?.id ?? createSessionId();
 
 			if (migrateToCurrentVersion(this.fileEntries)) {
@@ -1018,7 +1089,7 @@ export class SessionManager {
 		this.sessionState = buildSessionState(this.fileEntries);
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
-			if (entry.type === "session" || entry.type === "session_state") continue;
+			if (entry.type === "session" || isLegacySessionStateEntry(entry)) continue;
 			this.byId.set(entry.id, entry);
 			this.leafId = entry.id;
 			if (entry.type === "label") {
@@ -1033,11 +1104,11 @@ export class SessionManager {
 		}
 	}
 
-	private _rewriteFile(): void {
+	private _rewriteFile(entries: readonly FileEntry[] = this.fileEntries): void {
 		if (!this.persist || !this.sessionFile) return;
 		const fd = openSync(this.sessionFile, "w");
 		try {
-			for (const entry of this.fileEntries) {
+			for (const entry of entries) {
 				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
 			}
 		} finally {
@@ -1085,21 +1156,22 @@ export class SessionManager {
 	 * State records are durable immediately and never change the conversation leaf.
 	 */
 	setSessionState(key: string, value: JsonValue | undefined): void {
+		const storedValue = value === undefined ? undefined : cloneJsonValue(value);
 		const entry: SessionStateEntry = {
-			type: "session_state",
+			type: "session",
 			timestamp: new Date().toISOString(),
-			key,
-			...(value === undefined ? {} : { value: cloneJsonValue(value) }),
+			sessionState: { key, ...(storedValue === undefined ? {} : { value: storedValue }) },
 		};
 
-		// Keep the effective view synchronized with the durable fact before returning.
+		// Persist first so a thrown write cannot leak a non-durable effective value.
+		const createdFile = this._persistSessionState(entry, [...this.fileEntries, entry]);
 		this.fileEntries.push(entry);
-		if (entry.value === undefined) {
+		if (storedValue === undefined) {
 			this.sessionState.delete(key);
 		} else {
-			this.sessionState.set(key, entry.value);
+			this.sessionState.set(key, storedValue);
 		}
-		this._persistSessionState(entry);
+		if (createdFile) this.flushed = true;
 	}
 
 	/** Return a defensive snapshot for session derivation and JSONL export. */
@@ -1109,16 +1181,16 @@ export class SessionManager {
 		) as Record<string, JsonValue>;
 	}
 
-	private _persistSessionState(entry: SessionStateEntry): void {
-		if (!this.persist || !this.sessionFile) return;
+	private _persistSessionState(entry: SessionStateEntry, nextEntries: readonly FileEntry[]): boolean {
+		if (!this.persist || !this.sessionFile) return false;
 
 		// A durable state write creates the session file even before the first assistant response.
 		if (!this.flushed) {
-			this._rewriteFile();
-			this.flushed = true;
-			return;
+			this._rewriteFile(nextEntries);
+			return true;
 		}
 		appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+		return false;
 	}
 
 	_persist(entry: SessionEntry): void {
@@ -1398,8 +1470,7 @@ export class SessionManager {
 	 * Get session header.
 	 */
 	getHeader(): SessionHeader | null {
-		const h = this.fileEntries.find((e) => e.type === "session");
-		return h ? (h as SessionHeader) : null;
+		return this.fileEntries.find(isSessionHeader) ?? null;
 	}
 
 	/**
@@ -1408,7 +1479,7 @@ export class SessionManager {
 	 * change the leaf pointer. Entries cannot be modified or deleted.
 	 */
 	getEntries(): SessionEntry[] {
-		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session" && e.type !== "session_state");
+		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session");
 	}
 
 	/**
@@ -1624,6 +1695,26 @@ export class SessionManager {
 	}
 
 	/**
+	 * Create an isolated in-memory branch without mutating the source manager.
+	 *
+	 * @internal Runtime replacement uses this so `session_shutdown` writes remain
+	 * on the outgoing source and cannot change the already-derived child.
+	 */
+	createBranchedInMemorySession(leafId: string | null): SessionManager {
+		if (this.persist) {
+			throw new Error("createBranchedInMemorySession requires an in-memory session");
+		}
+
+		// Rebuild indexes on a detached manager, then apply normal branch derivation there.
+		const derived = SessionManager.inMemory(this.cwd);
+		derived.fileEntries = this.fileEntries.slice();
+		derived.sessionId = this.sessionId;
+		derived._buildIndex();
+		derived.createBranchedSession(leafId);
+		return derived;
+	}
+
+	/**
 	 * Create a new session.
 	 * @param cwd Working directory (stored in session header)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
@@ -1652,7 +1743,7 @@ export class SessionManager {
 				// authoritative for legacy files with very large headers or prefixes.
 				preloadedFileEntries = loadEntriesFromFile(resolvedPath);
 				const firstEntry = preloadedFileEntries[0];
-				header = firstEntry?.type === "session" ? firstEntry : null;
+				header = firstEntry && isSessionHeader(firstEntry) ? firstEntry : null;
 			}
 		}
 		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
@@ -1701,7 +1792,7 @@ export class SessionManager {
 			throw new Error(`Cannot fork: source session file is empty or invalid: ${resolvedSourcePath}`);
 		}
 
-		const sourceHeader = sourceEntries.find((e) => e.type === "session") as SessionHeader | undefined;
+		const sourceHeader = sourceEntries.find(isSessionHeader);
 		if (!sourceHeader) {
 			throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
 		}
@@ -1737,9 +1828,9 @@ export class SessionManager {
 			appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
 		}
 
-		// Preserve conversation history while dropping obsolete state writes.
+		// Preserve conversation history while dropping both current and temporary state encodings.
 		for (const entry of sourceEntries) {
-			if (entry.type !== "session" && entry.type !== "session_state") {
+			if (entry.type !== "session" && !isLegacySessionStateEntry(entry)) {
 				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
 			}
 		}

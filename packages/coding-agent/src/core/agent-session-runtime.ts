@@ -332,8 +332,10 @@ export class AgentSessionRuntime {
 			return { cancelled: false, selectedText };
 		}
 
-		const sessionManager = this.session.sessionManager;
-		sessionManager.createBranchedSession(targetLeafId);
+		const sourceManager = this.session.sessionManager;
+		// Derive onto a detached manager before shutdown, matching persisted forks:
+		// shutdown writes stay on the source and cannot enter the child snapshot.
+		const sessionManager = sourceManager.createBranchedInMemorySession(targetLeafId);
 		await this.teardownCurrent("fork", sessionManager.getSessionFile());
 		this.apply(
 			await this.createRuntime({

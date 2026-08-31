@@ -24,7 +24,7 @@ Sessions have a version field in the header:
 - **Version 2**: Tree structure with `id`/`parentId` linking
 - **Version 3**: Renamed `hookMessage` role to `custom` (extensions unification)
 
-Existing sessions are automatically migrated to the current version (v3) when loaded. Session-global state uses an additive self-describing record, so it does not require a format-version bump or migration.
+Existing sessions are automatically migrated to the current version (v3) when loaded. Session-global state uses an additive `type: "session"` metadata envelope, so pre-state v3 readers skip it under their existing header-record rule instead of misclassifying it as a tree entry. Supported readers distinguish the first-line header by its `id` field and later state metadata by `sessionState`; no version bump is required. Files containing the temporary flat `type: "session_state"` encoding are normalized on load.
 
 ## Source Files
 
@@ -202,15 +202,17 @@ For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ pare
 
 ### SessionStateEntry
 
-Session-global extension state outside the conversation tree and model context. These records deliberately have no `id` or `parentId`.
+Session-global extension state outside the conversation tree and model context. These metadata records deliberately have no `id` or `parentId`.
 
 ```json
-{"type":"session_state","timestamp":"2024-12-03T14:00:00.000Z","key":"my-extension.settings","value":{"enabled":true}}
+{"type":"session","timestamp":"2024-12-03T14:00:00.000Z","sessionState":{"key":"my-extension.settings","value":{"enabled":true}}}
 ```
 
-Records are interpreted in physical file order. Repeated writes are append-only and the latest record for a key wins, regardless of branch position or timestamp. An omitted `value` clears the key; JSON `null` is a stored value.
+The shared `type: "session"` envelope is a compatibility encoding: pre-state v3 readers already skip every such record, while supported readers use `sessionState` to distinguish state metadata from the first-line header.
 
-Keys share one open namespace. They do not reserve ownership or prevent another extension from reading or overwriting the same key. Values may be any JSON value: object, array, string, number, boolean, or `null`.
+Records are interpreted in physical file order. Repeated writes are append-only and the latest nested fact for a key wins, regardless of branch position or timestamp. An omitted `sessionState.value` clears the key; JSON `null` is a stored value.
+
+Keys share one open namespace. They do not reserve ownership or prevent another extension from reading or overwriting the same key. Values may be any JSON value: object, array, string, finite number, boolean, or `null`. `NaN`, `Infinity`, and `-Infinity` are rejected, including when nested.
 
 State records are excluded from `SessionEntry`, `getEntries()`, `getTree()`, `getBranch()`, tree navigation, branch summaries, context building, compaction input, and transcript rendering.
 
@@ -282,7 +284,7 @@ Branch-local extension data. Does NOT participate in LLM context, but does parti
 {"type":"custom","id":"h8i9j0k1","parentId":"g7h8i9j0","timestamp":"2024-12-03T14:20:00.000Z","customType":"my-extension","data":{"count":42}}
 ```
 
-Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context. Use `session_state` instead when tree navigation must not change the effective value.
+Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context. Use the session-global state API instead when tree navigation must not change the effective value.
 
 ### CustomMessageEntry
 
@@ -319,7 +321,7 @@ The session name is displayed in the session selector (`/resume`) instead of the
 
 ## Tree Structure
 
-Conversation entries form a tree; `session_state` records never participate:
+Conversation entries form a tree; session-global state metadata never participates:
 - First conversation entry has `parentId: null`
 - Each subsequent entry points to its parent via `parentId`
 - Branching creates new children from an earlier entry
@@ -367,10 +369,15 @@ for (const line of lines) {
 
   switch (entry.type) {
     case "session":
-      console.log(`Session v${entry.version ?? 1}: ${entry.id}`);
+      if (entry.sessionState) {
+        const state = entry.sessionState;
+        console.log(`Global state ${state.key}: ${"value" in state ? JSON.stringify(state.value) : "<cleared>"}`);
+      } else {
+        console.log(`Session v${entry.version ?? 1}: ${entry.id}`);
+      }
       break;
-    case "session_state":
-      console.log(`Global state ${entry.key}: ${"value" in entry ? JSON.stringify(entry.value) : "<cleared>"}`);
+    case "session_state": // Temporary flat encoding; current pi normalizes this on load.
+      console.log(`Legacy global state ${entry.key}: ${"value" in entry ? JSON.stringify(entry.value) : "<cleared>"}`);
       break;
     case "message":
       console.log(`[${entry.id}] ${entry.message.role}: ${JSON.stringify(entry.message.content)}`);
@@ -445,7 +452,7 @@ Key methods for working with sessions programmatically.
 ### Instance Methods - Context & Info
 - `buildContextEntries()` - Get active branch entries with compaction applied
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
-- `getEntries()` - All entries (excluding header)
+- `getEntries()` - All conversation-tree entries (excluding the header and state metadata)
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry
 - `getCwd()` - Working directory
@@ -459,10 +466,10 @@ Key methods for working with sessions programmatically.
 
 ## Lifecycle and Derivation Semantics
 
-- Opening, resuming with `pi -c`, switching sessions, and reloading replay all `session_state` records in file order.
+- Opening, resuming with `pi -c`, switching sessions, and reloading replay all state metadata in file order.
 - New sessions start with no session-global values.
 - In-memory sessions expose identical effective behavior without disk persistence.
 - `/tree` navigation changes only the conversation leaf and never rolls global state backward.
-- `/fork`, `/clone`, `createBranchedSession()`, CLI `--fork`, and active-branch JSONL export inherit one record per effective key at the derivation boundary. Obsolete writes and tombstones are not copied.
+- `/fork`, `/clone`, `createBranchedSession()`, CLI `--fork`, and active-branch JSONL export inherit one record per effective key at the derivation boundary. Runtime fork/clone snapshots after `session_before_fork` succeeds but before outgoing `session_shutdown`; state written during shutdown remains source-only. Obsolete writes and tombstones are not copied.
 - `/import` relocates the imported JSONL records without collapsing state history, then replays them normally. Import is not treated as a new derived session; normal runtime startup may append model or thinking records afterward.
-- State writes flush immediately, including before the first assistant message, so a successful setter call is visible in the current runtime and after reopening the file.
+- State writes flush immediately, including before the first assistant message. A successful setter call is visible in the current runtime and after reopening the file; validation or persistence failure throws without changing effective state or retained file-entry history.

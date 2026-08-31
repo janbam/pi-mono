@@ -446,7 +446,7 @@ pi.on("session_before_fork", async (event, ctx) => {
 });
 ```
 
-After a successful fork or clone, pi emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the new session, then emits `session_start` with `reason: "fork"` and `previousSessionFile`.
+After a successful fork or clone, pi snapshots the child session, emits `session_shutdown` for the old extension instance, reloads and rebinds extensions for the child, then emits `session_start` with `reason: "fork"` and `previousSessionFile`. Session-global state written during outgoing `session_shutdown` stays on the source and is not inherited by the already-snapshotted child.
 Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `session_start`.
 
 #### session_before_compact / session_compact / session_compact_failed
@@ -1491,9 +1491,9 @@ const state = pi.getSessionState<MyState>(STATE_KEY);
 pi.setSessionState(STATE_KEY, undefined); // Clear the key
 ```
 
-The namespace is deliberately open. Keys do not establish ownership: multiple extensions may read or overwrite the same key, and the latest appended write wins. Values may be any JSON value, including objects, arrays, primitives, and `null`; `undefined` is reserved for clearing a key. Reads return defensive copies, so mutating a returned object does not persist a change.
+The namespace is deliberately open. Keys do not establish ownership: multiple extensions may read or overwrite the same key, and the latest appended write wins. Values may be any JSON value: objects, arrays, strings, finite numbers, booleans, or `null`; `undefined` is reserved for clearing a key. `NaN`, `Infinity`, and `-Infinity` throw a `TypeError`, including when nested. Reads return defensive copies, so mutating a returned object does not persist a change.
 
-State writes are immediately visible and durable. They survive exit, `pi -c`, `/resume`, `/reload`, and `/tree` navigation. New sessions start empty. `/fork`, `/clone`, `--fork`, and branch JSONL export inherit one snapshot of each effective value at the derivation boundary rather than copying obsolete writes. `/import` preserves imported state history and replays its latest values instead of treating the file as a new derivation.
+State writes are immediately visible and durable. Validation and persistence happen before the effective value changes; a failed setter throws and leaves both the last durable value and retained state history unchanged. Successful writes survive exit, `pi -c`, `/resume`, `/reload`, and `/tree` navigation. New sessions start empty. `/fork`, `/clone`, `--fork`, and branch JSONL export inherit one snapshot of each effective value at the derivation boundary rather than copying obsolete writes. Runtime fork/clone snapshots before outgoing `session_shutdown`, so state written by that shutdown hook remains source-only. `/import` preserves imported state history and replays its latest values instead of treating the file as a new derivation.
 
 See [session-state.ts](../examples/extensions/session-state.ts) for a complete example.
 
