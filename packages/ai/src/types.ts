@@ -323,7 +323,7 @@ export interface AnthropicAllowedFallbackModel {
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
-	/** Provider-neutral tool selection for simple requests. Default: "auto". */
+	/** Provider-neutral tool selection for simple requests. When omitted, adapters use provider-specific behavior. */
 	toolChoice?: ToolChoice;
 	/** Effective reasoning level already resolved against the model. */
 	reasoning?: ThinkingLevel;

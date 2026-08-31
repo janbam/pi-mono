@@ -36,7 +36,7 @@
 - Never stream the full `./test.sh` output into the conversation. Capture it in a unique `/tmp` log, preserve the suite's exit status, and print only compact failure and summary lines: `test_log=$(mktemp /tmp/pi-test.XXXXXX.log); ./test.sh >"$test_log" 2>&1; test_status=$?; rg -n 'FAIL|Failed Tests|Test Files|Tests|npm error' "$test_log"; printf 'Full log: %s\n' "$test_log"; exit "$test_status"`. Do not add context lines to this initial filter because dot-reporter lines can be enormous. Inspect only the relevant failure ranges in the retained log when more detail is needed instead of rerunning the suite.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
-- Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
+- When regressions tests for fixing a github issue, add a comment with the github issue number next to the test.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Never commit unless the user asks.
 
