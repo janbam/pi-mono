@@ -171,6 +171,28 @@ describe("parseOpenCodeGoPricingTable", () => {
 		);
 		expect(() => parseOpenCodeGoPricingTable(endpointsIdCollision)).toThrow("same model id");
 
+		// An endpoints row with fewer cells than its header would read the id
+		// out of a shifted column.
+		const shiftedEndpointsRow = pricingPageHtml.replace(
+			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td></tr>",
+			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td></tr>",
+		);
+		expect(() => parseOpenCodeGoPricingTable(shiftedEndpointsRow)).toThrow("endpoints row has 3 cells, expected 4");
+
+		// An empty name or id cell cannot key a pricing row.
+		const emptyEndpointsId = pricingPageHtml.replace(
+			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td></tr>",
+			"<tr><td>Grok 4.6</td><td></td><td>/</td><td>@ai-sdk/xai</td></tr>",
+		);
+		expect(() => parseOpenCodeGoPricingTable(emptyEndpointsId)).toThrow("empty model name or id");
+
+		// A header-only endpoints table yields no id mapping at all.
+		const emptyEndpointsTable = `${requestsTableHtml}${pricingTableHtml}
+<table>
+	<tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr>
+</table>`;
+		expect(() => parseOpenCodeGoPricingTable(emptyEndpointsTable)).toThrow("endpoints table parsed to zero rows");
+
 		// Two pricing variants collapsing to one base name hit the same model
 		// id; one row would silently win.
 		const duplicateRow = pricingPageHtml.replace(
