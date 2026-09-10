@@ -42,6 +42,6 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
-
 .claude-home/
 .claude-sessions.json
+packages/agent/docs/extensions/pi-server-artifact/index.md

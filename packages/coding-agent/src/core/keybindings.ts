@@ -20,6 +20,7 @@ export interface AppKeybindings {
 	"app.suspend": true;
 	"app.thinking.cycle": true;
 	"app.thinking.cycleBackward": true;
+	"app.thinking.save": true;
 	"app.model.cycleForward": true;
 	"app.model.cycleBackward": true;
 	"app.model.select": true;
@@ -120,6 +121,10 @@ export const KEYBINDINGS = {
 	"app.thinking.cycleBackward": {
 		defaultKeys: "ctrl+alt+t",
 		description: "Cycle to previous thinking level",
+	},
+	"app.thinking.save": {
+		defaultKeys: "ctrl+s",
+		description: "Save thinking level",
 	},
 	"app.model.cycleForward": {
 		defaultKeys: "ctrl+p",

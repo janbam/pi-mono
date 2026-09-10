@@ -207,10 +207,12 @@ describe("Anthropic prompt-cache warmup requests", () => {
 	it("reasserts the warmup token and thinking ceiling after payload hooks", async () => {
 		let requestPayload: unknown;
 		const client = {
-			messages: {
-				create: (payload: unknown) => {
-					requestPayload = payload;
-					return { asResponse: async () => makeWarmupResponse() };
+			beta: {
+				messages: {
+					create: (payload: unknown) => {
+						requestPayload = payload;
+						return { asResponse: async () => makeWarmupResponse() };
+					},
 				},
 			},
 		} as unknown as Anthropic;
@@ -246,10 +248,12 @@ describe("Anthropic prompt-cache warmup requests", () => {
 	it("uses the non-streaming Messages response and returns its maintenance usage", async () => {
 		let requestPayload: unknown;
 		const client = {
-			messages: {
-				create: (payload: unknown) => {
-					requestPayload = payload;
-					return { asResponse: async () => makeWarmupResponse() };
+			beta: {
+				messages: {
+					create: (payload: unknown) => {
+						requestPayload = payload;
+						return { asResponse: async () => makeWarmupResponse() };
+					},
 				},
 			},
 		} as unknown as Anthropic;

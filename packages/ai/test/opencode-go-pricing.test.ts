@@ -22,6 +22,7 @@ const qwenTokenPlanIndividualModelIds = [
 	"qwen3.6-flash",
 	"qwen3.7-max",
 	"qwen3.7-plus",
+	"qwen3.8-flash",
 	"qwen3.8-max",
 ];
 

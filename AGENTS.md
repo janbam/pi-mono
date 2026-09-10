@@ -282,6 +282,10 @@ rm -f packages/ai/src/models.generated.ts packages/ai/src/image-models.generated
 git merge upstream-release
 # resolve any conflicts
 
+# Bump packages/pless to the merged lockstep version first: its version and both
+# @earendil-works/* ranges must match the new workspace version, or npm installs a
+# nested published pi-coding-agent copy and the pless tests fail on a missing subpath export.
+
 # Update dependencies and rebuild
 npm install
 npm run build

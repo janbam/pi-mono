@@ -119,6 +119,27 @@ Implementation:
 - Tests: `packages/coding-agent/test/keybindings.test.ts`, `test/suite/agent-session-model-extension.test.ts`, `test/rpc-prompt-response-semantics.test.ts`, `test/rpc.test.ts`
 - Docs: `packages/coding-agent/docs/keybindings.md`, `docs/quickstart.md`, `docs/rpc.md`, `README.md`, `CHANGELOG.md`
 
+## Prompt-cache maintenance keeps Anthropic caches warm between turns
+
+Upstream behavior: a cache lease can only be established or refreshed by a foreground turn; idle gaps let Anthropic's 5-minute / 1-hour cache entries expire.
+
+Fork behavior: the ai package exposes `promptCacheWarmup` plus `promptCacheWarmupExpiresAt` on Anthropic Messages requests. The coding agent's cache-warming scheduler (`--keep-cache-warm` / `-kw`, `/warm`) sends non-streaming maintenance requests that hit the same cache prefix without producing visible output. `promptCacheWarmup` requests are zero-token (`max_tokens: 0`), except budget-thinking models which get the one-token answer allowance Anthropic requires; a scheduler-side lease deadline is enforced before dispatch and a missed deadline is encoded as `aborted`.
+
+The request must be cache-compatible with the real continuation, so three invariants hold:
+
+- The conversation cache breakpoint sits on the prefix shared with the real continuation: before the synthetic final dot, or on the unresolved tool-use block whose tool result is still missing.
+- Payload hooks (`onPayload`) may change the body, but `max_tokens`, `thinking`, and `output_config` are restored from the pre-hook request and the stream flag is forced back to `false`; a hook can never turn a warmup into a streaming generation.
+- Server-side model fallbacks are skipped for warmups so a fallback model cannot absorb a cache refresh attributed to the requested model.
+
+Implementation:
+
+- Warmup request shaping, breakpoint placement, hook invariants, and non-streaming response handling: `packages/ai/src/api/anthropic-messages.ts` (`capturePromptCacheWarmupInvariants`, `applyPromptCacheWarmupInvariants`, `applyConversationCacheControl`, `isPromptCacheWarmupExpired`)
+- Public options: `packages/ai/src/types.ts`
+- Scheduler, lease lifetime, UI state, and pause integration: `packages/coding-agent/src/core/agent-session.ts`, `src/modes/interactive/interactive-mode.ts`
+- Tests: `packages/ai/test/anthropic-cache-warmup.test.ts`, `packages/coding-agent/test/agent-session-cache-warmup.test.ts`
+
+Merge note: upstream moved the Anthropic adapter to the beta Messages API (`client.beta.messages.create`). Warmups must dispatch through the same beta client and read the non-streaming `BetaMessage` body for usage and stop reason; fork tests inject fake clients under `beta.messages.create`.
+
 ## Keybinding experiments that were reverted
 
 An attempt to move the follow-up queueing keybinding (`app.message.followUp`) from `alt+enter` to the four-modifier chord `ctrl+alt+super+a` (emitted by a keyd remap of physical `Alt+Enter`) was reverted: the chord never reliably reached pi. Tested both without tmux and with Kitty-protocol passthrough enabled, so tmux is ruled out as the cause — the loss is in keyd's emitted events or the terminal's encoding of the chord, unresolved. `app.message.followUp` remains at the upstream default `alt+enter` and the keyd remap is unused.
