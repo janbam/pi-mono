@@ -6,14 +6,35 @@ import type { ModelCost } from "../src/types.ts";
 // $30, or $60) at those nominal prices. To make per-token cost reflect how fast
 // a model drains its allowance, every page price is scaled by
 // (baseline / usage): $60-usage models keep the nominal price, $30-usage
-// models double it, $15-usage models quadruple it. This override applies only
-// to the opencode-go provider, never to opencode (Zen).
+// models double it, $15-usage models quadruple it. Pricing rows are keyed by
+// the model ids from the page's endpoints table, so models.dev entries match
+// exactly. This override applies only to the opencode-go provider, never to
+// opencode (Zen).
 
 export const OPENCODE_GO_PRICING_URL = "https://opencode.ai/docs/go/";
 const OPENCODE_GO_USAGE_BASELINE = 60;
-/** Lowercase header names the pricing table must provide; they also drive per-row column indexing. */
-const REQUIRED_PRICING_COLUMNS = ["model", "input", "output", "cached read", "cached write", "usage"] as const;
-type PricingColumnName = (typeof REQUIRED_PRICING_COLUMNS)[number];
+/**
+ * Canonical pricing column names and the header wordings that map to them.
+ * Aliases keep table detection working across header rewordings ("Usage"
+ * became "Monthly limit" in Sep 2026) while unknown or missing columns stay
+ * unrecognized so the parser fails loudly instead of shifting prices into
+ * the wrong fields.
+ */
+const PRICING_COLUMN_ALIASES = {
+	model: ["model"],
+	input: ["input"],
+	output: ["output"],
+	"cached read": ["cached read", "cache read"],
+	"cached write": ["cached write", "cache write"],
+	usage: ["usage", "monthly limit", "monthly usage"],
+} as const satisfies Record<string, readonly string[]>;
+type PricingColumnName = keyof typeof PRICING_COLUMN_ALIASES;
+const REQUIRED_PRICING_COLUMNS = Object.keys(PRICING_COLUMN_ALIASES) as PricingColumnName[];
+const PRICING_HEADER_TO_COLUMN = new Map<string, PricingColumnName>(
+	Object.entries(PRICING_COLUMN_ALIASES).flatMap(([column, aliases]) =>
+		aliases.map((alias) => [alias, column as PricingColumnName] as const),
+	),
+);
 
 /** One pricing-table row after normalization: page prices in $/1M tokens, usage allowance in $. */
 export interface OpenCodeGoPricingRow {
@@ -24,8 +45,8 @@ export interface OpenCodeGoPricingRow {
 	usage: number;
 }
 
-/** Match page model names to models.dev ids: "Grok 4.6" and "grok-4.6" both become "grok46". */
-export function normalizeOpenCodeGoModelKey(name: string): string {
+/** Join page display names across tables: "Grok 4.6" and "grok-4.6" both become "grok46". */
+function normalizeOpenCodeGoModelKey(name: string): string {
 	return name.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
 }
 
@@ -61,41 +82,113 @@ function readTableRow(rowHtml: string): string[] {
 	return [...rowHtml.matchAll(/<t[dh][^>]*>(.*?)<\/t[dh]>/gs)].map((match) => decodeTableCell(match[1]));
 }
 
+function extractTables(html: string): string[] {
+	return [...html.matchAll(/<table[^>]*>.*?<\/table>/gs)].map((match) => match[0]);
+}
+
+/** Lowercase headers the endpoints table must provide to yield the page's authoritative model-id mapping. */
+const REQUIRED_ENDPOINT_COLUMNS = ["model", "model id"] as const;
+
 /**
- * Parse the Go docs pricing table out of the page HTML, keyed by normalized
- * model name. The table is anchored on its header row (Model / Input / Output /
- * Cached Read / Cached Write / Usage) because it is the only table on the page
- * with those columns, and the header names drive column indexing so a page
- * redesign that renames, removes, or inserts columns fails loudly here
- * instead of silently shifting prices into the wrong fields. Tiered
- * ("> N tokens") and Peak rows are skipped so each model keeps one flat cost
- * from its base row (plain, "≤ N tokens", or Off-Peak), matching the catalog's
- * single-cost schema.
+ * Parse the endpoints table (Model / Model ID / Endpoint / AI SDK Package)
+ * into normalized display name -> model id. The page's own mapping is
+ * authoritative: display names can diverge from models.dev ids (the pricing
+ * row "DeepSeek V4.1 Flash" is served as model id "deepseek-flash"), so
+ * pricing rows must be matched to models.dev by id, never by name.
  */
-export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeGoPricingRow> {
-	const tables = [...html.matchAll(/<table[^>]*>.*?<\/table>/gs)].map((match) => match[0]);
-	let columns: Map<string, number> | undefined;
-	let pricingTable: string | undefined;
-	for (const table of tables) {
+function parseEndpointModelIds(html: string): Map<string, string> {
+	for (const table of extractTables(html)) {
 		const headerRow = table.match(/<tr[^>]*>.*?<\/tr>/s);
 		const headers = headerRow ? readTableRow(headerRow[0]) : [];
 		const indices = new Map(headers.map((header, index) => [header.toLowerCase(), index] as const));
-		if (REQUIRED_PRICING_COLUMNS.every((name) => indices.has(name))) {
-			columns = indices;
-			pricingTable = table;
-			break;
+		if (!REQUIRED_ENDPOINT_COLUMNS.every((name) => indices.has(name))) continue;
+		const rows = [...table.matchAll(/<tr[^>]*>.*?<\/tr>/gs)].map((match) => readTableRow(match[0])).slice(1);
+		const modelIds = new Map<string, string>();
+		for (const cells of rows) {
+			// Row and header cell counts must agree so ids cannot be read out of
+			// a shifted column.
+			if (cells.length !== headers.length) {
+				throw new Error(
+					`OpenCode Go endpoints row has ${cells.length} cells, expected ${headers.length}: ${JSON.stringify(cells)}`,
+				);
+			}
+			const name = cells[indices.get("model") as number];
+			const modelId = cells[indices.get("model id") as number];
+			if (!name || !modelId) {
+				throw new Error(`OpenCode Go endpoints row has an empty model name or id: ${JSON.stringify(cells)}`);
+			}
+			const nameKey = normalizeOpenCodeGoModelKey(name);
+			// A duplicate name would overwrite its id mapping silently.
+			if (modelIds.has(nameKey)) {
+				throw new Error(`OpenCode Go endpoints table has duplicate rows for ${JSON.stringify(name)}`);
+			}
+			modelIds.set(nameKey, modelId);
 		}
+		// Two display names claiming the same id would collide once pricing
+		// rows are keyed by id; fail instead of letting one win.
+		if (new Set(modelIds.values()).size !== modelIds.size) {
+			throw new Error("OpenCode Go endpoints table maps multiple models to the same model id");
+		}
+		if (modelIds.size === 0) throw new Error("OpenCode Go endpoints table parsed to zero rows");
+		return modelIds;
+	}
+	throw new Error("OpenCode Go endpoints table not found on the docs page");
+}
+
+/**
+ * Parse the Go docs pricing table out of the page HTML, keyed by the model
+ * ids from the endpoints table (the page's authoritative name->id mapping).
+ * The pricing table is anchored on its header row (Model / Input / Output /
+ * Cached Read / Cached Write / Usage-or-Monthly-limit) because it is the only
+ * table on the page with those columns: headers are matched through the
+ * alias table so wording changes stay compatible, and the canonical column
+ * names drive indexing so a page redesign that renames to an unknown
+ * wording, removes, or inserts columns fails loudly here instead of silently
+ * shifting prices into the wrong fields. Tiered ("> N tokens") and Peak rows
+ * are skipped so each model keeps one flat cost from its base row (plain,
+ * "≤ N tokens", or Off-Peak), matching the catalog's single-cost schema.
+ */
+export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeGoPricingRow> {
+	let columns: Map<PricingColumnName, number> | undefined;
+	let headerCount = 0;
+	let pricingTable: string | undefined;
+	for (const table of extractTables(html)) {
+		const headerRow = table.match(/<tr[^>]*>.*?<\/tr>/s);
+		const headers = headerRow ? readTableRow(headerRow[0]) : [];
+		// Canonicalize headers via aliases; a candidate must expose every
+		// required column, and no two headers may resolve to the same column.
+		const candidate = new Map<PricingColumnName, number>();
+		const duplicateColumns: PricingColumnName[] = [];
+		for (const [index, header] of headers.entries()) {
+			const column = PRICING_HEADER_TO_COLUMN.get(header.toLowerCase());
+			if (!column) continue;
+			// Duplicate resolution would make one header win silently; flag it
+			// so a full candidate fails loudly instead of indexing the wrong one.
+			if (candidate.has(column)) duplicateColumns.push(column);
+			else candidate.set(column, index);
+		}
+		if (!REQUIRED_PRICING_COLUMNS.every((name) => candidate.has(name))) continue;
+		if (duplicateColumns.length > 0) {
+			throw new Error(`OpenCode Go pricing table has duplicate columns for ${duplicateColumns.join(", ")}`);
+		}
+		columns = candidate;
+		headerCount = headers.length;
+		pricingTable = table;
+		break;
 	}
 	if (!pricingTable || !columns) throw new Error("OpenCode Go pricing table not found on the docs page");
+	// The endpoints table supplies the authoritative id for each pricing row;
+	// keying by id makes the models.dev lookup an exact match.
+	const modelIds = parseEndpointModelIds(html);
 
 	const rows = [...pricingTable.matchAll(/<tr[^>]*>.*?<\/tr>/gs)].map((match) => readTableRow(match[0])).slice(1);
 	const pricing = new Map<string, OpenCodeGoPricingRow>();
 	for (const cells of rows) {
 		// Row and header cell counts must agree, otherwise a shifted row would
 		// read prices out of the wrong columns.
-		if (cells.length !== columns.size) {
+		if (cells.length !== headerCount) {
 			throw new Error(
-				`OpenCode Go pricing row has ${cells.length} cells, expected ${columns.size}: ${JSON.stringify(cells)}`,
+				`OpenCode Go pricing row has ${cells.length} cells, expected ${headerCount}: ${JSON.stringify(cells)}`,
 			);
 		}
 		const cell = (name: PricingColumnName) => cells[columns.get(name) as number];
@@ -106,11 +199,14 @@ export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeG
 		if (usage <= 0) {
 			throw new Error(`OpenCode Go pricing row ${JSON.stringify(cell("model"))} has invalid usage allowance`);
 		}
-		const key = normalizeOpenCodeGoModelKey(baseName);
-		if (pricing.has(key)) {
-			throw new Error(`OpenCode Go pricing table has duplicate rows for ${JSON.stringify(baseName)}`);
+		const modelId = modelIds.get(normalizeOpenCodeGoModelKey(baseName));
+		if (!modelId) {
+			throw new Error(`OpenCode Go pricing row ${JSON.stringify(baseName)} has no model id in the endpoints table`);
 		}
-		pricing.set(key, {
+		if (pricing.has(modelId)) {
+			throw new Error(`OpenCode Go pricing table has duplicate rows for model id ${JSON.stringify(modelId)}`);
+		}
+		pricing.set(modelId, {
 			input: parsePriceCell(cell("input"), "input"),
 			output: parsePriceCell(cell("output"), "output"),
 			cacheRead: parsePriceCell(cell("cached read"), "cached read"),
