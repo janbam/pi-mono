@@ -1077,7 +1077,8 @@ export class SessionManager {
 	}
 
 	private _loadEntries(entries: FileEntry[], options?: NewSessionOptions): void {
-		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
+		// Only the header owns session identity; session-state facts deliberately share its outer record type.
+		const header = entries.find(isSessionHeader);
 
 		if (header) {
 			this.fileEntries = entries;

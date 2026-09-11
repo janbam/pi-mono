@@ -236,7 +236,7 @@ This is a fork of `badlogic/pi-mono`.
 
 1. Create short-lived feature/fix branches from `main`
 2. Do work on the branch, commit, push to origin
-3. `gh pr create --base main` (targets `yannbam/pi-mono`)
+3. `gh pr create --base main` (targets `janbam/pi-mono`)
 4. `gh pr merge --merge` (merge on GitHub)
 5. `git checkout main && git pull origin main` (pull merge commit locally)
 6. Delete the feature branch (`git branch -d <branch>`)
@@ -261,26 +261,33 @@ git checkout main
 
 To find the latest release tag: `git tag --sort=-v:refname | head -5`
 
-## Updating this fork: merging upstream-release into main
+## Updating this fork from `upstream-release`
 
 Only update when instructed to do so.
 
 > **Always refresh `upstream-release` first** (see previous section) before running the merge. The early-exit check below is only meaningful if `upstream-release` already points at the latest upstream tag. Check current upstream releases at <https://github.com/earendil-works/pi/releases> and compare against the tag on `upstream-release`.
 
-**Abort and ask for clarification if `main` has uncommitted changes.**
+Integrate upstream on a dedicated branch created from synchronized `main`; never create the upstream merge commit directly on `main`. The integration commit must retain the previous fork `main` as its first parent and the exact `upstream-release` tag as its second parent. Merge its PR with a merge commit—never squash or rebase it—so both histories remain explicit and reachable.
+
+**Abort and ask for clarification if the worktree has uncommitted changes.**
 
 ```bash
-# Early exit: if main already contains the latest upstream-release, stop immediately.
+git checkout main
+git pull --ff-only origin main
+
+# If the worktree is dirty, STOP and ask janbam before proceeding.
+
+# Stop immediately when main already contains the refreshed upstream-release.
 git merge-base --is-ancestor upstream-release main && echo "Already up to date — nothing to merge." && exit 0
 
-git checkout main
-# If the working tree is dirty, STOP and ask janbam before proceeding.
+# Replace vX.Y.Z with the tag mirrored by upstream-release.
+git checkout -b chore/merge-upstream-vX.Y.Z
 
-# Discard any local build artifacts (auto-generated)
-rm -f packages/ai/src/models.generated.ts packages/ai/src/image-models.generated.ts
-
-git merge upstream-release
+git merge --no-ff --no-commit upstream-release
 # resolve any conflicts
+
+# Remove merged generated catalogs so the build recreates them from source.
+rm -f packages/ai/src/models.generated.ts packages/ai/src/image-models.generated.ts
 
 # Bump packages/pless to the merged lockstep version first: its version and both
 # @earendil-works/* ranges must match the new workspace version, or npm installs a
@@ -294,8 +301,17 @@ npm run check
 # Address any build errors
 # Ask the user to smoke test the new build
 
-# When everything is good, commit and push
-git push origin main
+# Preserve the upstream tag as the merge commit's second parent.
+git commit -m "Merge upstream-release (vX.Y.Z) into main"
+git push -u origin chore/merge-upstream-vX.Y.Z
+
+# Open the PR against janbam/pi-mono main using a body file, then merge—not squash or rebase.
+# Write the concise PR summary to /tmp/pi-upstream-pr-body.md first.
+gh pr create --base main --head chore/merge-upstream-vX.Y.Z --body-file /tmp/pi-upstream-pr-body.md
+gh pr merge --merge
+git checkout main
+git pull --ff-only origin main
+git branch -d chore/merge-upstream-vX.Y.Z
 ```
 
-When landing a PR and when merging updates from upstream always read JANBAM_DOCS/FORK_MOD.md and keep all fork divergence documented there!
+When landing a PR or integrating an upstream release, always read `JANBAM_DOCS/FORK_MODS.md` and keep every fork divergence documented there.
