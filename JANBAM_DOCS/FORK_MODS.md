@@ -1,12 +1,18 @@
 # Fork Modifications
 
-Deliberate behavioral divergences of this fork (`yannbam/pi-mono`) from upstream. Each entry records what changed, why, and where the change lives.
+Deliberate behavioral divergences of this fork (`janbam/pi-mono`) from upstream. Each entry records what changed, why, and where the change lives.
 
 ## Extensions can persist session-global state outside the conversation tree
 
-Upstream behavior: extension persistence uses branch-local custom entries or external sidecar files. Tree navigation can roll custom-entry state backward, while sidecars require extensions to own session identity and lifecycle handling.
+Upstream behavior: `CustomEntry` persists branch-local extension data in the conversation tree. Upstream's `SessionManager.inMemory(..., entries)` can restore a complete externally stored session; it is a loading mechanism, not another state record.
 
 Fork behavior: extensions can read and write durable JSON values through `pi.getSessionState(key)` and `pi.setSessionState(key, value)`. Keys share one open last-write-wins namespace with no ownership restrictions. State records are append-only session metadata outside the conversation tree, transcript, compaction input, and model context, so `/tree` never rolls them back.
+
+Record roles:
+
+- `SessionHeader`: one `type: "session"` record with `id`, `version`, and `cwd`; owns session identity.
+- `SessionStateEntry`: `type: "session"` plus `sessionState`, without `id`/`parentId`; owns fork-global extension values. Loaders must distinguish it from the header by shape, not by `type` alone.
+- `CustomEntry`: `type: "custom"` with `id`/`parentId`; owns branch-local extension data and follows tree navigation.
 
 Lifecycle semantics:
 
@@ -135,10 +141,11 @@ Implementation:
 
 - Warmup request shaping, breakpoint placement, hook invariants, and non-streaming response handling: `packages/ai/src/api/anthropic-messages.ts` (`capturePromptCacheWarmupInvariants`, `applyPromptCacheWarmupInvariants`, `applyConversationCacheControl`, `isPromptCacheWarmupExpired`)
 - Public options: `packages/ai/src/types.ts`
-- Scheduler, lease lifetime, UI state, and pause integration: `packages/coding-agent/src/core/agent-session.ts`, `src/modes/interactive/interactive-mode.ts`
-- Tests: `packages/ai/test/anthropic-cache-warmup.test.ts`, `packages/coding-agent/test/agent-session-cache-warmup.test.ts`
+- Scheduler, lease lifetime, marker replay, and maintenance accounting: `packages/coding-agent/src/core/cache-warmup.ts`
+- Foreground request provenance, provider-work draining, UI state, and pause integration: `packages/coding-agent/src/core/agent-session.ts`, `src/modes/interactive/interactive-mode.ts`
+- Tests: `packages/ai/test/anthropic-cache-warmup.test.ts`, `packages/ai/test/anthropic-sse-parsing.test.ts`, `packages/coding-agent/test/cache-warmup.test.ts`, `test/agent-session-cache-warmup.test.ts`, `test/interactive-mode-turn-usage.test.ts`
 
-Merge note: upstream moved the Anthropic adapter to the beta Messages API (`client.beta.messages.create`). Warmups must dispatch through the same beta client and read the non-streaming `BetaMessage` body for usage and stop reason; fork tests inject fake clients under `beta.messages.create`.
+Merge note: upstream moved the Anthropic adapter to the beta Messages API (`client.beta.messages.create`). Warmups must dispatch through the same beta client and read the non-streaming `BetaMessage` body for usage and stop reason; fork tests inject fake clients under `beta.messages.create`. Anthropic may resolve a requested model alias to a concrete serving model, so `AssistantMessage.model` remains the request identity while `responseModel` records the serving model; otherwise the foreground cache proof would be rejected as belonging to a different request.
 
 ## Keybinding experiments that were reverted
 

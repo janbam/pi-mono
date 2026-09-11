@@ -103,6 +103,30 @@ describe("SessionManager.inMemory with preloaded entries", () => {
 		expect(session.getHeader()!.cwd).toBe("/project");
 	});
 
+	it("distinguishes headerless session state from the session header", () => {
+		const entries: FileEntry[] = [
+			{
+				type: "session",
+				timestamp: "2026-01-01T00:00:00Z",
+				sessionState: { key: "extension.enabled", value: true },
+			},
+			{
+				type: "message",
+				id: "abc12345",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:01Z",
+				message: userMessage("hello"),
+			},
+		];
+
+		const session = SessionManager.inMemory("/project", { id: "restored-session" }, entries);
+
+		expect(session.getSessionId()).toBe("restored-session");
+		expect(session.getHeader()!.id).toBe("restored-session");
+		expect(session.getSessionState("extension.enabled")).toBe(true);
+		expect(session.getEntries()[0]?.id).toBe("abc12345");
+	});
+
 	it("generates a session id when the options carry none", () => {
 		const entries = storedEntries((source) => source.appendMessage(userMessage("hello")));
 

@@ -81,6 +81,33 @@ function createFakeAnthropicClient(response: Response): Anthropic {
 }
 
 describe("Anthropic raw SSE parsing", () => {
+	it("preserves the requested model when an alias resolves to a concrete serving model", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const events = minimalAnthropicEvents.map((event) => ({ ...event }));
+		events[0].data = JSON.stringify({
+			type: "message_start",
+			message: {
+				id: "msg_concrete_model",
+				model: "claude-haiku-4-5-20251001",
+				usage: {
+					input_tokens: 12,
+					output_tokens: 0,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+				},
+			},
+		});
+
+		const result = await streamAnthropic(
+			model,
+			{ messages: [{ role: "user", content: "Hello", timestamp: 1 }] },
+			{ client: createFakeAnthropicClient(createSseResponse(events)) },
+		).result();
+
+		expect(result.model).toBe("claude-haiku-4-5");
+		expect(result.responseModel).toBe("claude-haiku-4-5-20251001");
+	});
+
 	it("fails safely when Anthropic falls back after output begins", async () => {
 		const model = getModel("anthropic", "claude-opus-5");
 		const response = createSseResponse([
