@@ -138,6 +138,65 @@ describe("parseOpenCodeGoPricingTable", () => {
 		});
 	});
 
+	it("drops superseded struck-through values and trailing promo annotations, keeping the current number", () => {
+		// Live-page regression (Sep 2026): the Go promo strikes the old $15
+		// monthly limit and shows the multiplied $60 with a "4x · Ends Sep 20"
+		// annotation; price cells can carry the same old/new pattern.
+		const promoPageHtml = `
+<table>
+	<tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr>
+	<tr><td>DeepSeek V4.1 Flash (Off-Peak)</td><td><s>$0.30</s> <strong>$0.15</strong></td><td>$0.60</td><td>$0.003</td><td>-</td><td><del>$15</del> <strong>$60</strong><br><small>4x · Ends Sep 20</small></td></tr>
+	<tr><td>Union Alpha Free</td><td>Free</td><td>Free</td><td>Free</td><td>-</td><td><strong>Unlimited</strong><br><small>limited time</small></td></tr>
+</table>
+<table>
+	<tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr>
+	<tr><td>DeepSeek V4.1 Flash</td><td>deepseek-flash</td><td>/</td><td>@ai-sdk/openai-compatible</td></tr>
+	<tr><td>Union Alpha Free</td><td>union-alpha</td><td>/</td><td>@ai-sdk/anthropic</td></tr>
+</table>`;
+		const pricing = parseOpenCodeGoPricingTable(promoPageHtml);
+		// The current (unstruck) values win: usage 60 and input 0.15, with the
+		// promo annotation ignored rather than fused into the number.
+		expect(pricing.get("deepseek-flash")).toEqual({
+			input: 0.15,
+			output: 0.6,
+			cacheRead: 0.003,
+			cacheWrite: 0,
+			usage: 60,
+		});
+		// "Free" price cells are 0 cost and the "Unlimited ... limited time"
+		// usage cell is an infinite allowance, whose 60/usage multiplier is 0.
+		const unionAlphaFree = pricing.get("union-alpha");
+		expect(unionAlphaFree).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usage: Infinity });
+		expect(getOpenCodeGoUsageAdjustedCost(pricing.get("union-alpha")!)).toEqual({
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		});
+
+		// A cell carrying only an annotation ("4x · Ends Sep 20") has no price in
+		// it; the leading-number rule must reject digit-fused junk loudly, for
+		// ASCII and Unicode suffixes alike.
+		const annotationOnly = promoPageHtml.replace(
+			"<td><s>$0.30</s> <strong>$0.15</strong></td>",
+			"<td>4x · Ends Sep 20</td>",
+		);
+		expect(() => parseOpenCodeGoPricingTable(annotationOnly)).toThrow("unparseable input cell");
+		const unicodeFusion = promoPageHtml.replace(
+			"<td><s>$0.30</s> <strong>$0.15</strong></td>",
+			"<td>4× · Ends Sep 20</td>",
+		);
+		expect(() => parseOpenCodeGoPricingTable(unicodeFusion)).toThrow("unparseable input cell");
+
+		// An unclosed struck-through tag would leave the superseded value in the
+		// cell, silently winning the leading-number pick — it must fail instead.
+		const unclosedStrike = promoPageHtml.replace(
+			"<td><del>$15</del> <strong>$60</strong><br><small>4x · Ends Sep 20</small></td>",
+			"<td><del>$15 <strong>$60</strong></td>",
+		);
+		expect(() => parseOpenCodeGoPricingTable(unclosedStrike)).toThrow("unpaired struck-through tag");
+	});
+
 	it("fails loudly when the pricing or endpoints table is missing or malformed", () => {
 		const noPricingTable = "<table><tr><th>Model</th><th>requests per 5 hour</th></tr></table>";
 		expect(() => parseOpenCodeGoPricingTable(noPricingTable)).toThrow("pricing table not found");
