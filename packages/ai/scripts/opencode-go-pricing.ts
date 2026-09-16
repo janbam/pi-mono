@@ -36,7 +36,7 @@ const PRICING_HEADER_TO_COLUMN = new Map<string, PricingColumnName>(
 	),
 );
 
-/** One pricing-table row after normalization: page prices in $/1M tokens, usage allowance in $. */
+/** One pricing-table row after normalization: page prices in $/1M tokens, usage allowance in $ (Infinity for unlimited promos). */
 export interface OpenCodeGoPricingRow {
 	input: number;
 	output: number;
@@ -57,23 +57,46 @@ function roundCost(value: number): number {
 function parsePriceCell(cell: string, label: string): number {
 	const value = cell.replace("$", "").replaceAll(",", "").trim();
 	if (value === "-" || value === "") return 0;
-	const parsed = Number(value);
-	if (!Number.isFinite(parsed) || parsed < 0) {
+	// Word cells name a price state rather than a number: free and unlimited
+	// both mean zero marginal per-token cost.
+	const lowered = value.toLowerCase();
+	if (lowered === "free" || lowered === "unlimited") return 0;
+	// Promo and price-change cells carry the current number first and
+	// annotations after it ("$60 4x · Ends Sep 20"). Only a leading number that
+	// stands alone counts: anything fused directly onto it ("4x", "4×") is an
+	// annotation, not a price, and must keep failing loudly instead of parsing
+	// to garbage.
+	const leading = value.match(/^(?:\d+(?:\.\d+)?|\.\d+)(?!\S)/);
+	if (!leading) {
 		throw new Error(`OpenCode Go pricing table has an unparseable ${label} cell: ${JSON.stringify(cell)}`);
 	}
-	return parsed;
+	return Number(leading[0]);
 }
 
 function decodeTableCell(cell: string): string {
-	return cell
+	const decoded = cell
 		// Decode numeric and named entities before &amp; so encoded markup does
 		// not hide tier markers like "&gt; 200K tokens" from the variant check.
 		.replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
 		.replaceAll("&gt;", ">")
 		.replaceAll("&lt;", "<")
 		.replaceAll("&nbsp;", " ")
-		.replaceAll("&amp;", "&")
-		.replace(/<[^>]+>/g, "")
+		.replaceAll("&amp;", "&");
+	// Struck-through spans are superseded values: promo cells show the old
+	// monthly limit as <del>$15</del> next to the current <strong>$60</strong>.
+	// Drop them before tag stripping so only the current value survives.
+	const unstruck = decoded.replace(/<(del|s)\b[^>]*>[\s\S]*?<\/\1>/g, "");
+	// An unpaired struck-through tag was never dropped, so the superseded and
+	// current values would both survive and the leading-number rule would
+	// silently pick the superseded one — fail loudly instead.
+	if (/<\/?(del|s)\b/i.test(unstruck)) {
+		throw new Error(`OpenCode Go table cell has an unpaired struck-through tag: ${JSON.stringify(cell)}`);
+	}
+	return unstruck
+		// Tags become spaces, not empty strings: a promo cell like
+		// "<strong>$60</strong><br><small>4x …</small>" must decode to "$60 4x …",
+		// not fuse into the unparseable "$604x …".
+		.replace(/<[^>]+>/g, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 }
@@ -195,7 +218,13 @@ export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeG
 		const variant = cell("model").match(/\(([^)]*)\)\s*$/)?.[1] ?? "";
 		if (variant.startsWith(">") || variant.toLowerCase() === "peak") continue;
 		const baseName = cell("model").replace(/\s*\([^)]*\)\s*$/, "").trim();
-		const usage = parsePriceCell(cell("usage"), "usage");
+		// Unlimited-usage promos ("Unlimited" plus a "limited time" annotation)
+		// make the allowance effectively infinite: the 60/usage multiplier
+		// collapses to 0, so the promo-period per-token cost is free.
+		const usageCell = cell("usage");
+		const usage = usageCell.toLowerCase().startsWith("unlimited")
+			? Infinity
+			: parsePriceCell(usageCell, "usage");
 		if (usage <= 0) {
 			throw new Error(`OpenCode Go pricing row ${JSON.stringify(cell("model"))} has invalid usage allowance`);
 		}
@@ -220,8 +249,9 @@ export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeG
 
 /**
  * Scale a pricing row's nominal prices by (baseline / usage allowance) and
- * round to the catalog's cost precision. The dash cells were already turned
- * into 0 by the parser, so unsupported cache prices stay free.
+ * round to the catalog's cost precision. Unlimited usage (Infinity) scales
+ * everything to 0. The dash cells were already turned into 0 by the parser,
+ * so unsupported cache prices stay free.
  */
 export function getOpenCodeGoUsageAdjustedCost(row: OpenCodeGoPricingRow): ModelCost {
 	const multiplier = OPENCODE_GO_USAGE_BASELINE / row.usage;
