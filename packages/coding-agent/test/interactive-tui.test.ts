@@ -70,6 +70,34 @@ describe("createInteractiveTui", () => {
 		altTui.stop();
 	});
 
+	it("uses the configured fullscreen wheel step with Alt precision", async () => {
+		const terminal = new RecordingTerminal(20, 4);
+		const ui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			fullscreenWheelScrollLines: 3,
+		});
+		const scrollView = new ScrollView(
+			new Text(Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ primary: true },
+		);
+		ui.setLayoutRoot(scrollView);
+		ui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<65;1;1M");
+			await terminal.waitForRender();
+			expect(scrollView.scrollTop).toBe(3);
+			terminal.sendInput("\x1b[<73;1;1M");
+			await terminal.waitForRender();
+			expect(scrollView.scrollTop).toBe(4);
+		} finally {
+			ui.stop();
+		}
+	});
+
 	it("shows the configured jump-to-bottom shortcut while scrolled up", async () => {
 		initTheme("dark");
 		const previousKeybindings = getKeybindings();
@@ -118,7 +146,14 @@ describe("createInteractiveTui", () => {
 		renderer.setFocus(component);
 
 		type SwitchContext = {
-			runtimeHost: { session: { settingsManager: { getFullscreenCopyOnSelect: () => boolean } } };
+			runtimeHost: {
+				session: {
+					settingsManager: {
+						getFullscreenWheelScrollLines: () => number;
+						getFullscreenCopyOnSelect: () => boolean;
+					};
+				};
+			};
 			renderer: ReturnType<typeof createInteractiveTui>;
 			ui: TUI;
 			fullscreenLayoutRoot: Component;
@@ -127,7 +162,14 @@ describe("createInteractiveTui", () => {
 			extensionTerminalInputSubscriptions: Set<never>;
 		};
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
-			runtimeHost: { session: { settingsManager: { getFullscreenCopyOnSelect: () => true } } },
+			runtimeHost: {
+				session: {
+					settingsManager: {
+						getFullscreenWheelScrollLines: () => 1,
+						getFullscreenCopyOnSelect: () => true,
+					},
+				},
+			},
 			renderer,
 			ui: undefined as unknown as TUI,
 			fullscreenLayoutRoot: component,

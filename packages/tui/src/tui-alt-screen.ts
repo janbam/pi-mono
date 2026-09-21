@@ -72,7 +72,6 @@ const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
-const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
 const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES = 32 * 1024 * 1024;
 const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES = 64 * 1024 * 1024;
@@ -163,7 +162,7 @@ interface SearchHighlightRange {
 }
 
 export interface TuiAltScreenOptions {
-	/** Number of logical lines moved for each mouse-wheel event. */
+	/** Number of logical lines moved for each unmodified mouse-wheel event. Alt-wheel always moves one line. */
 	wheelScrollLines?: number;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
 	mouse?: boolean;
@@ -234,7 +233,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		x: number;
 		y: number;
 	};
-	private readonly wheelScrollLines: number;
+	private wheelScrollLines: number;
 	private readonly mouseEnabled: boolean;
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
@@ -288,6 +287,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	setCopyOnSelect(enabled: boolean): void {
 		this.copyOnSelect = enabled;
+	}
+
+	/** Set the normal wheel step; Alt-wheel remains a one-line precision gesture. */
+	setWheelScrollLines(lines: number): void {
+		this.wheelScrollLines = Math.max(1, Math.floor(lines));
 	}
 
 	/** Whether the fullscreen viewport has a non-empty active text selection. */
@@ -966,8 +970,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private getWheelScrollLines(button: number): number {
-		// SGR mouse button codes use bit 3 (value 8) for the Alt modifier.
-		return (button & 8) !== 0 ? this.wheelScrollLines * ALT_WHEEL_SCROLL_MULTIPLIER : this.wheelScrollLines;
+		// Keep Alt-wheel precise even when normal wheel events use a larger configured step.
+		return (button & 8) !== 0 ? 1 : this.wheelScrollLines;
 	}
 
 	private routeWheel(event: WheelEvent): void {

@@ -273,19 +273,29 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
-	it("scrolls faster while Alt is held during wheel input", async () => {
+	it("uses the configured wheel step while Alt provides one-line precision", async () => {
 		const terminal = new VirtualTerminal(20, 4);
-		const tui = new TuiAltScreen(terminal);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { wheelScrollLines: 3 });
 		const text = new Text(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0);
 		tui.addChild(text);
 		tui.start();
 		await terminal.waitForRender();
 		assert.strictEqual(tui.viewportTop, 8);
 
+		terminal.sendInput("\x1b[<64;1;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 5);
+
+		// Runtime setting changes must affect the renderer that is already active.
+		tui.setWheelScrollLines(2);
+		terminal.sendInput("\x1b[<65;1;1M");
+		await terminal.waitForRender();
+		assert.strictEqual(tui.viewportTop, 7);
+
 		// Alt modifier sets bit 8 on the wheel button (72 = 64 + 8).
 		terminal.sendInput("\x1b[<72;1;1M");
 		await terminal.waitForRender();
-		assert.strictEqual(tui.viewportTop, 3);
+		assert.strictEqual(tui.viewportTop, 6);
 		tui.stop();
 	});
 

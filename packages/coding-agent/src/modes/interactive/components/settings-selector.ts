@@ -4,6 +4,7 @@ import {
 	type Component,
 	Container,
 	getCapabilities,
+	Input,
 	type ScrollViewScrollbar,
 	type SelectItem,
 	type SettingItem,
@@ -84,6 +85,7 @@ export interface SettingsConfig {
 	tuiMode: TuiMode;
 	fullscreenExitOutput: FullscreenExitOutput;
 	fullscreenScrollbar: ScrollViewScrollbar;
+	fullscreenWheelScrollLines: number;
 	fullscreenCopyOnSelect: boolean;
 	warnings: WarningSettings;
 }
@@ -121,6 +123,7 @@ export interface SettingsCallbacks {
 	onTuiModeChange: (mode: TuiMode) => void;
 	onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
+	onFullscreenWheelScrollLinesChange: (lines: number) => void;
 	onFullscreenCopyOnSelectChange: (enabled: boolean) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
 	onCancel: () => void;
@@ -437,6 +440,51 @@ class ThemeSubmenu extends Container {
 	}
 }
 
+/** Free-form numeric editor used by settings that cannot be represented as preset choices. */
+class NumberInputSubmenu extends Container {
+	private readonly input: Input;
+
+	constructor(
+		title: string,
+		description: string,
+		currentValue: string,
+		onSubmit: (value: number) => void,
+		onCancel: () => void,
+	) {
+		super();
+
+		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(theme.fg("muted", description), 0, 0));
+		this.addChild(new Spacer(1));
+
+		this.input = new Input({ prompt: "Lines: " });
+		// Seed through the editing path so the cursor starts after the current value.
+		this.input.handleInput(currentValue);
+		const error = new Text("", 0, 0);
+		this.input.onSubmit = (value) => {
+			const numericValue = value.trim() === "" ? Number.NaN : Number(value);
+			// Keep invalid text editable instead of closing the submenu or persisting NaN.
+			if (!Number.isFinite(numericValue)) {
+				error.setText(theme.fg("error", "Enter a finite number."));
+				return;
+			}
+			// Reflect the persisted integer/minimum policy in the parent list immediately.
+			onSubmit(Math.max(1, Math.floor(numericValue)));
+		};
+		this.input.onEscape = onCancel;
+		this.addChild(this.input);
+		this.addChild(error);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to go back"), 0, 0));
+	}
+
+	/** Forward focused input to the numeric editor. */
+	handleInput(data: string): void {
+		this.input.handleInput(data);
+	}
+}
+
 /**
  * Main settings selector component.
  */
@@ -697,6 +745,20 @@ export class SettingsSelectorComponent extends Container {
 				values: ["auto", "always", "hidden"],
 			},
 			{
+				id: "fullscreen-wheel-scroll-lines",
+				label: "Fullscreen wheel scroll lines",
+				description: "Logical lines moved per mouse-wheel event in fullscreen mode; values below 1 become 1",
+				currentValue: String(config.fullscreenWheelScrollLines),
+				submenu: (currentValue, done) =>
+					new NumberInputSubmenu(
+						"Fullscreen Wheel Scroll Lines",
+						"Enter the number of logical lines moved per mouse-wheel event.",
+						currentValue,
+						(value) => done(String(value)),
+						() => done(),
+					),
+			},
+			{
 				id: "fullscreen-copy-on-select",
 				label: "Fullscreen copy on select",
 				description: "Automatically copy selected text in fullscreen mode; disable to copy selections with Ctrl+X",
@@ -923,6 +985,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "fullscreen-scrollbar":
 						callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
+						break;
+					case "fullscreen-wheel-scroll-lines":
+						callbacks.onFullscreenWheelScrollLinesChange(Number.parseInt(newValue, 10));
 						break;
 					case "fullscreen-copy-on-select":
 						callbacks.onFullscreenCopyOnSelectChange(newValue === "true");

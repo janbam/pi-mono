@@ -455,24 +455,35 @@ describe("SettingsManager", () => {
 		const manager = SettingsManager.create(projectDir, agentDir);
 		expect(manager.getFullscreenExitOutput()).toBe("transcript");
 		expect(manager.getFullscreenScrollbar()).toBe("auto");
+		expect(manager.getFullscreenWheelScrollLines()).toBe(1);
 		expect(manager.getFullscreenCopyOnSelect()).toBe(true);
 
 		manager.setFullscreenExitOutput("resume-hint");
 		manager.setFullscreenScrollbar("hidden");
+		manager.setFullscreenWheelScrollLines(0);
+		expect(manager.getFullscreenWheelScrollLines()).toBe(1);
+		manager.setFullscreenWheelScrollLines(7.8);
+		expect(manager.getFullscreenWheelScrollLines()).toBe(7);
 		manager.setFullscreenCopyOnSelect(false);
 		await manager.flush();
 		const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
 		expect(savedSettings.fullscreenExitOutput).toBe("resume-hint");
 		expect(savedSettings.fullscreenScrollbar).toBe("hidden");
+		expect(savedSettings.fullscreenWheelScrollLines).toBe(7);
 		expect(savedSettings.fullscreenCopyOnSelect).toBe(false);
 
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			JSON.stringify({ fullscreenExitOutput: "nothing", fullscreenScrollbar: "sometimes" }),
+			JSON.stringify({
+				fullscreenExitOutput: "nothing",
+				fullscreenScrollbar: "sometimes",
+				fullscreenWheelScrollLines: "many",
+			}),
 		);
 		const reloadedManager = SettingsManager.create(projectDir, agentDir);
 		expect(reloadedManager.getFullscreenExitOutput()).toBe("transcript");
 		expect(reloadedManager.getFullscreenScrollbar()).toBe("auto");
+		expect(reloadedManager.getFullscreenWheelScrollLines()).toBe(1);
 		expect(reloadedManager.getFullscreenCopyOnSelect()).toBe(true);
 	});
 
