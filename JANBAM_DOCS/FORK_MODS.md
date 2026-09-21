@@ -147,6 +147,19 @@ Implementation:
 
 Merge note: upstream moved the Anthropic adapter to the beta Messages API (`client.beta.messages.create`). Warmups must dispatch through the same beta client and read the non-streaming `BetaMessage` body for usage and stop reason; fork tests inject fake clients under `beta.messages.create`. Anthropic may resolve a requested model alias to a concrete serving model, so `AssistantMessage.model` remains the request identity while `responseModel` records the serving model; otherwise the foreground cache proof would be rejected as belonging to a different request.
 
+## Fullscreen mouse-wheel scrolling has a configurable step
+
+Upstream behavior: each mouse-wheel event moves the fullscreen transcript by one logical line, or five lines while Alt is held.
+
+Fork behavior: `fullscreenWheelScrollLines` controls the normal wheel step and defaults to 1. `/settings` accepts a free-form number instead of a preset list; persisted values are rounded down and clamped to at least 1. Alt-wheel always moves one line for precision. Changes apply immediately to an active fullscreen renderer and also when switching into fullscreen mode.
+
+Implementation:
+
+- Settings persistence and `/settings` input: `packages/coding-agent/src/core/settings-manager.ts`, `src/modes/interactive/components/settings-selector.ts`, `src/modes/interactive/interactive-mode.ts`
+- Fullscreen renderer behavior and wiring: `packages/tui/src/tui-alt-screen.ts`, `packages/coding-agent/src/modes/interactive/tui-renderer.ts`
+- Tests: `packages/tui/test/tui-alt-screen.test.ts`, `packages/coding-agent/test/settings-manager.test.ts`, `test/settings-selector.test.ts`, `test/interactive-tui.test.ts`
+- User documentation: `packages/coding-agent/docs/settings.md`
+
 ## Keybinding experiments that were reverted
 
 An attempt to move the follow-up queueing keybinding (`app.message.followUp`) from `alt+enter` to the four-modifier chord `ctrl+alt+super+a` (emitted by a keyd remap of physical `Alt+Enter`) was reverted: the chord never reliably reached pi. Tested both without tmux and with Kitty-protocol passthrough enabled, so tmux is ruled out as the cause — the loss is in keyd's emitted events or the terminal's encoding of the chord, unresolved. `app.message.followUp` remains at the upstream default `alt+enter` and the keyd remap is unused.

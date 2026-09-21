@@ -25,10 +25,12 @@ describe("SettingsSelectorComponent", () => {
 	it("cycles through fullscreen settings", () => {
 		const onExitOutputChange = vi.fn();
 		const onScrollbarChange = vi.fn();
+		const onWheelScrollLinesChange = vi.fn();
 		const onCopyOnSelectChange = vi.fn();
 		const config = {
 			fullscreenExitOutput: "transcript",
 			fullscreenScrollbar: "auto",
+			fullscreenWheelScrollLines: 1,
 			fullscreenCopyOnSelect: true,
 			warnings: {},
 			defaultModel: "not set",
@@ -40,6 +42,7 @@ describe("SettingsSelectorComponent", () => {
 		const callbacks = {
 			onFullscreenExitOutputChange: onExitOutputChange,
 			onFullscreenScrollbarChange: onScrollbarChange,
+			onFullscreenWheelScrollLinesChange: onWheelScrollLinesChange,
 			onFullscreenCopyOnSelectChange: onCopyOnSelectChange,
 		} as unknown as SettingsCallbacks;
 
@@ -53,6 +56,15 @@ describe("SettingsSelectorComponent", () => {
 		expect(onExitOutputChange.mock.calls.flat()).toEqual(["resume-hint", "transcript"]);
 		cycle("Fullscreen scrollbar", 3);
 		expect(onScrollbarChange.mock.calls.flat()).toEqual(["always", "hidden", "auto"]);
+
+		const numberInput = new SettingsSelectorComponent(config, callbacks).getSettingsList();
+		numberInput.selectItem("fullscreen-wheel-scroll-lines");
+		numberInput.handleInput("\r");
+		numberInput.handleInput("\x7f");
+		numberInput.handleInput("17");
+		numberInput.handleInput("\r");
+		expect(onWheelScrollLinesChange).toHaveBeenCalledWith(17);
+
 		cycle("Fullscreen copy on select", 2);
 		expect(onCopyOnSelectChange.mock.calls.flat()).toEqual([false, true]);
 	});

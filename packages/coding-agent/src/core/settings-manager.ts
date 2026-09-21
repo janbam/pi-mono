@@ -142,6 +142,7 @@ export interface Settings {
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
+	fullscreenWheelScrollLines?: number; // default: 1; no effect in regular TUI mode
 	fullscreenCopyOnSelect?: boolean; // default: true; no effect in regular TUI mode
 }
 
@@ -1227,6 +1228,23 @@ export class SettingsManager {
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void {
 		this.globalSettings.fullscreenScrollbar = mode;
 		this.markModified("fullscreenScrollbar");
+		this.save();
+	}
+
+	/** Return the normalized number of logical lines moved by a fullscreen wheel event. */
+	getFullscreenWheelScrollLines(): number {
+		const lines = this.settings.fullscreenWheelScrollLines;
+		if (typeof lines !== "number" || !Number.isFinite(lines)) return 1;
+		return Math.max(1, Math.floor(lines));
+	}
+
+	/** Persist the fullscreen wheel step as an integer of at least one line. */
+	setFullscreenWheelScrollLines(lines: number): void {
+		if (!Number.isFinite(lines)) {
+			throw new Error(`Invalid fullscreenWheelScrollLines setting: ${String(lines)}`);
+		}
+		this.globalSettings.fullscreenWheelScrollLines = Math.max(1, Math.floor(lines));
+		this.markModified("fullscreenWheelScrollLines");
 		this.save();
 	}
 
