@@ -141,7 +141,10 @@ describe("cache warming", () => {
 			isReplayable(budgetModel, undefined),
 			isReplayable(adaptiveModel, { reasoning: "medium" }),
 			isReplayable(openaiModel, { reasoning: "medium" }),
-		]).toEqual([false, true, true, true]);
+			// JBMOD: fork options carry the unresolved level; judge what the model actually receives.
+			isReplayable(budgetModel, { reasoning: "off" }),
+			isReplayable({ ...budgetModel, thinkingLevelMap: { off: null } }, { reasoning: "off" }),
+		]).toEqual([false, true, true, true, true, false]);
 	});
 
 	it("replays profitable requests and preserves options across repeated refreshes", async () => {

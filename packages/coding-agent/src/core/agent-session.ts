@@ -354,6 +354,8 @@ export class AgentSession {
 	// Pause state: escape holds the run at the next turn boundary instead of aborting it
 	private _pauseRequested = false;
 	private _pausedResumable = false;
+	/** Early-termination hints of the current turn's finalized tool results by call id; consumed by the pause hook. */
+	private readonly _toolCallTerminates = new Map<string, boolean>();
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -887,6 +889,10 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// Remember terminate hints so the pause hook can tell a batch that ends the run from one that continues.
+		if (event.type === "tool_execution_end") {
+			this._toolCallTerminates.set(event.toolCallId, event.result.terminate === true);
+		}
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -1681,9 +1687,10 @@ export class AgentSession {
 	 * Install the pause hook on the agent's finishTurn chain.
 	 *
 	 * The pause only holds at boundaries where the loop would otherwise issue another
-	 * LLM request, i.e. a normal turn that produced tool results. A text-only final
-	 * turn must end naturally instead of creating a resumable paused state, because
-	 * a continuation cannot start from an assistant-last transcript.
+	 * LLM request, i.e. a normal turn that produced non-terminating tool results. A
+	 * text-only final turn or a fully terminating tool batch must end naturally instead
+	 * of creating a resumable paused state, because resuming would issue a request the
+	 * run was never going to make.
 	 */
 	private _installPauseHook(): void {
 		const previousFinishTurn = this.agent.finishTurn;
@@ -1691,10 +1698,16 @@ export class AgentSession {
 			// Run the boundary chain first so extension turn_end drafts persist even when the pause lands.
 			const previousDecision = (await previousFinishTurn?.(turn, signal)) ?? undefined;
 			const stopReason = turn.message.stopReason;
+			// A batch whose every result terminates ends the run without another request, like a text-only turn.
+			const batchTerminates =
+				turn.toolResults.length > 0 &&
+				turn.toolResults.every((result) => this._toolCallTerminates.get(result.toolCallId) === true);
+			this._toolCallTerminates.clear();
 			// Error and aborted turns are hard exits whose decisions the loop ignores; never consume a pause on them.
 			if (
 				!this._pauseRequested ||
 				turn.toolResults.length === 0 ||
+				batchTerminates ||
 				stopReason === "error" ||
 				stopReason === "aborted"
 			) {
@@ -1757,7 +1770,8 @@ export class AgentSession {
 	/** Release per-run state and signal settlement, shared by prompt and pause-resume runs. */
 	private async _finishAgentRun(): Promise<void> {
 		if (this._agentRunAbortRequested) this._finishCancelledRetry();
-		this._runSystemPromptOptions = undefined;
+		// A held run resumes with the same per-run prompt; discarding the hold clears it instead.
+		if (!this._pausedResumable) this._runSystemPromptOptions = undefined;
 		this._flushPendingBashMessages();
 		this._flushPendingCustomMessages();
 		// An unconsumed pause request must not leak into the next run.
@@ -1952,7 +1966,7 @@ export class AgentSession {
 			this._flushPendingCustomMessages();
 
 			// A new prompt supersedes any held pause; the message itself continues the work.
-			this._pausedResumable = false;
+			this._discardHeldPause();
 
 			// Validate model
 			if (!this.model) {
@@ -2359,7 +2373,7 @@ export class AgentSession {
 	async abort(): Promise<void> {
 		// A hard abort supersedes any pending or held pause.
 		this._pauseRequested = false;
-		this._pausedResumable = false;
+		this._discardHeldPause();
 		if (this._isAgentRunActive) {
 			this._agentRunAbortRequested = true;
 		}
@@ -2369,6 +2383,12 @@ export class AgentSession {
 		if (this._isBeforeSettle) this._abortDuringBeforeSettle = true;
 		this.agent.abort();
 		await this.waitForIdle();
+	}
+
+	/** Drop a held pause together with the per-run prompt state it kept alive for resume. */
+	private _discardHeldPause(): void {
+		this._pausedResumable = false;
+		this._runSystemPromptOptions = undefined;
 	}
 
 	/** Whether a pause is requested for the active run and it will hold after the current tool calls finish. */
@@ -2419,7 +2439,7 @@ export class AgentSession {
 		if (!this._pausedResumable) {
 			return;
 		}
-		this._pausedResumable = false;
+		this._discardHeldPause();
 
 		const model = this.model;
 		if (!model) {
@@ -3966,7 +3986,7 @@ export class AgentSession {
 		}
 
 		// Navigation moves the leaf, so a held pause no longer has a valid continuation point.
-		this._pausedResumable = false;
+		this._discardHeldPause();
 
 		const oldLeafId = this.sessionManager.getLeafId();
 

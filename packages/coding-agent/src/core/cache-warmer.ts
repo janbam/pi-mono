@@ -2,6 +2,7 @@ import {
 	type Api,
 	type Context,
 	calculateCost,
+	clampThinkingLevel,
 	type Model,
 	type ModelsSimpleStreamOptions,
 	type Usage,
@@ -55,8 +56,11 @@ export function getPromptCacheTtlMs(
  * and the model could still think for thousands of tokens.
  */
 export function isReplayable(model: Model<Api>, options: ModelsSimpleStreamOptions | undefined): boolean {
-	// JBMOD: fork request options carry the unresolved Pi level, where "off" also means no thinking.
-	if (!options?.reasoning || options.reasoning === "off" || model.api !== "anthropic-messages") return true;
+	// JBMOD: fork request options carry the unresolved Pi level; judge the level the model will actually receive,
+	// since always-thinking models clamp "off" up to a budget level.
+	if (model.api !== "anthropic-messages" || clampThinkingLevel(model, options?.reasoning ?? "off") === "off") {
+		return true;
+	}
 	return (model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true;
 }
 

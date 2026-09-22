@@ -4779,25 +4779,17 @@ export class InteractiveMode {
 	 * continuation prompts, or surface the paused state when nothing was parked.
 	 */
 	private async handlePauseSettled(): Promise<void> {
-		const parked = this.pausePendingMessages;
-		this.pausePendingMessages = [];
-		if (parked.length > 0) {
-			for (let i = 0; i < parked.length; i++) {
-				if (!this.session.isIdle) {
-					// A flushed prompt already started a new run; keep the rest for its settle.
-					this.pausePendingMessages.unshift(...parked.slice(i));
-					break;
-				}
-				try {
-					await this.session.prompt(parked[i]);
-				} catch (error) {
-					// Keep untried messages recoverable instead of dropping them.
-					this.pausePendingMessages.unshift(...parked.slice(i + 1));
-					this.showError(
-						`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					break;
-				}
+		// Flush one parked message per settle. prompt() issued during agent_settled is deferred and
+		// returns before its run starts, so the flushed run's own settle sends the next message;
+		// sending several here would race each other or a deferred extension run.
+		const next = this.pausePendingMessages.shift();
+		if (next !== undefined) {
+			try {
+				await this.session.prompt(next);
+			} catch (error) {
+				// Re-park instead of dropping: the editor was already cleared, so this is the only copy.
+				this.pausePendingMessages.unshift(next);
+				this.showError(`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`);
 			}
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();

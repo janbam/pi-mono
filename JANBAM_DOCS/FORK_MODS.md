@@ -135,14 +135,14 @@ Merge note: fork request options carry the unresolved Pi thinking level (`Models
 
 Upstream behavior: Escape while streaming aborts the stream and running tools immediately.
 
-Fork behavior: `app.turn.pause` (default `escape`) arms a pause. The run finishes its current tool batch, persists the tool results, and holds before the next LLM request. Pressing Escape again before the hold lands cancels it. While held, the editor border is bright red; typing a message continues the run with that message, and `app.turn.resume` (default `escape`) continues without injecting anything. Messages typed while the pause drains are parked and sent after it lands. `app.interrupt` (defaults `ctrl+escape`, `ctrl+\`) keeps the old hard-abort behavior and discards a held pause with a persisted "Operation aborted" marker. A text-only final turn ends normally instead of holding, because a continuation cannot start from an assistant-last transcript.
+Fork behavior: `app.turn.pause` (default `escape`) arms a pause. The run finishes its current tool batch, persists the tool results, and holds before the next LLM request. Pressing Escape again before the hold lands cancels it. While held, the editor border is bright red; typing a message continues the run with that message, and `app.turn.resume` (default `escape`) continues without injecting anything. Messages typed while the pause drains are parked and sent one per settle after it lands (a `prompt()` issued from `agent_settled` is deferred, so each flushed run's settle sends the next; a failed send is re-parked). `app.interrupt` (defaults `ctrl+escape`, `ctrl+\`) keeps the old hard-abort behavior and discards a held pause with a persisted "Operation aborted" marker. A text-only final turn or a tool batch whose results all set `terminate: true` ends normally instead of holding, because resuming would issue a request the run was never going to make. A held run keeps its per-run system prompt (`before_agent_start` result) for the resume; discarding the hold (new prompt, abort, `abortPausedTurn`, tree navigation) clears it.
 
 Implementation:
 
 - Pause state, `requestPause()`, `resumePaused()`, `abortPausedTurn()`: `packages/coding-agent/src/core/agent-session.ts`. The hold is a `finishTurn` hook returning `{ action: "end" }`, installed after upstream's boundary hooks so extension `turn_end` drafts still persist. A held run skips post-run recovery and `agent_before_settle`; resume runs the staged post-run pass, one `continue()`, then the shared settle loop (`_settleAgentRun`).
 - Keybindings: `packages/coding-agent/src/core/keybindings.ts`; `ctrl+escape` key matching: `packages/tui/src/keys.ts`
 - Interactive dispatch, parked messages, red border: `packages/coding-agent/src/modes/interactive/interactive-mode.ts`
-- Tests: `packages/coding-agent/test/suite/agent-session-pause.test.ts`
+- Tests: `packages/coding-agent/test/suite/agent-session-pause.test.ts`, `test/interactive-mode-pause-flush.test.ts`
 
 Merge note: v0.87.0 removed `shouldStopAfterTurn`, which the pause originally used; it now chains on `finishTurn`.
 
@@ -154,7 +154,7 @@ Fork behavior: the preamble is "You are the top senior software engineer and sys
 
 Implementation: `packages/coding-agent/src/core/system-prompt.ts` (`buildSystemPromptSections`, `buildRules`), `src/core/resource-loader.ts`, `src/cli/args.ts`.
 
-Tests adjusted for the fork prompt: `packages/coding-agent/test/system-prompt.test.ts`, `test/system-prompt-updates.test.ts`, `test/suite/agent-session-boundaries.test.ts` (replacement text sized to cross the compaction threshold without the docs section), and `packages/evals/test/harness.test.ts` (docs-stripping variant tests skipped because the section does not exist).
+Tests adjusted for the fork prompt: `packages/coding-agent/test/system-prompt.test.ts`, `test/system-prompt-updates.test.ts`, `test/suite/agent-session-boundaries.test.ts` (replacement text sized to cross the compaction threshold without the docs section), and `packages/evals/test/harness.test.ts` (docs-stripping variant tests skipped because the section does not exist). Consequence: upstream's docs eval runner (`packages/evals`, both `with_docs` and `without_docs` variants) does not work in the fork.
 
 ## Direct registered-tool execution
 
