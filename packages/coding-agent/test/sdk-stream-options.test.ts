@@ -9,7 +9,7 @@ import {
 	normalizeContext,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -126,7 +126,11 @@ describe("createAgentSession stream options", () => {
 		}
 	}
 
-	async function createCacheWarmingSession(populate?: (manager: SessionManager, model: Model<Api>) => void) {
+	async function createCacheWarmingSession(
+		sessionManager = SessionManager.inMemory(cwd),
+		settings: Partial<Settings> = { cacheWarming: "idle" },
+		onProviderCall?: () => void,
+	) {
 		const model: Model<Api> = {
 			...createModel("anthropic-messages"),
 			cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
@@ -140,21 +144,21 @@ describe("createAgentSession stream options", () => {
 			api: model.api,
 			streamSimple: () => {
 				providerCalls++;
+				onProviderCall?.();
 				return createDoneStream(model.api, 100_000);
 			},
 		});
-		const sessionManager = SessionManager.inMemory(cwd);
-		populate?.(sessionManager, model);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
 			modelRuntime: getModelRuntime(modelRegistry),
-			settingsManager: SettingsManager.inMemory({ cacheWarming: "idle" }),
+			settingsManager: SettingsManager.inMemory(settings),
 			sessionManager,
 		});
 		return {
 			session,
+			sessionManager,
 			providerCalls: () => providerCalls,
 			dispose: () => {
 				session.dispose();
@@ -180,21 +184,68 @@ describe("createAgentSession stream options", () => {
 		}
 	});
 
-	it("waits for the next request instead of restoring cache warming", async () => {
-		const fixture = await createCacheWarmingSession((manager, model) => {
-			manager.appendModelChange(model.provider, model.id);
-			manager.appendThinkingLevelChange("off");
-			manager.appendMessage({ role: "user", content: "test", timestamp: Date.now() - 60_000 });
-			const assistant = { ...createDoneMessage(model.api, 100_000), timestamp: Date.now() - 59_000 };
-			manager.appendMessage(assistant);
-			manager.appendUsage("cache_warm", model.provider, model.id, assistant.usage);
-		});
+	// JBMOD: upstream only warms requests captured in-process; the fork resumes the transcript's
+	// last request. The rebuild must reproduce the sent request, or its first refresh misses the cache.
+	it("resumes warming a resumed transcript with the request it last sent", async () => {
+		type RunView = { context: unknown; options: SimpleStreamOptions };
+		const activeRun = (session: object) => (session as { _cacheWarmer: { run?: RunView } })._cacheWarmer.run;
+
+		const first = await createCacheWarmingSession();
+		let sent: RunView | undefined;
 		try {
-			expect(fixture.providerCalls()).toBe(0);
-			expect(fixture.session.cacheWarmingStatus).toEqual({
-				state: "inactive",
-				reason: "waiting for first request",
-			});
+			await first.session.prompt("test");
+			sent = activeRun(first.session);
+		} finally {
+			first.dispose();
+		}
+
+		const resumed = await createCacheWarmingSession(first.sessionManager);
+		try {
+			// The rebuild runs the context hooks, so it waits until extensions are bound.
+			expect(resumed.session.cacheWarmingStatus?.state).toBe("inactive");
+			await resumed.session.bindExtensions({});
+			await vi.waitFor(() => expect(resumed.session.cacheWarmingStatus?.state).toBe("scheduled"));
+
+			const rebuilt = activeRun(resumed.session);
+			expect(sent).toBeDefined();
+			expect(rebuilt?.context).toEqual(sent?.context);
+			expect(rebuilt?.options.reasoning).toEqual(sent?.options.reasoning);
+			expect(rebuilt?.options.sessionId).toBe(sent?.options.sessionId);
+			expect(resumed.providerCalls()).toBe(0);
+		} finally {
+			resumed.dispose();
+		}
+	});
+
+	// JBMOD: /warm on while idle picks up the entry the last request left, without persisting.
+	it("starts warming the last request when warming is enabled explicitly while idle", async () => {
+		const fixture = await createCacheWarmingSession(undefined, {});
+		try {
+			await fixture.session.prompt("test");
+			expect(fixture.session.cacheWarmingStatus?.reason).toBe("cache warming disabled");
+
+			await fixture.session.setCacheWarmingOverride("on");
+			expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled");
+			expect(fixture.session.cacheWarmingMode).toBe("on");
+			expect(fixture.session.settingsManager.getCacheWarmingMode()).toBe("off");
+
+			await fixture.session.setCacheWarmingOverride("off");
+			expect(fixture.session.cacheWarmingStatus?.reason).toBe("cache warming disabled");
+			expect(fixture.providerCalls()).toBe(1);
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	// Regression (review of PR #42): enabling during the final text turn has no later request to start warming.
+	it("starts warming at settlement when enabled during the run's last request", async () => {
+		let enableDuringRequest: (() => void) | undefined;
+		const fixture = await createCacheWarmingSession(undefined, {}, () => enableDuringRequest?.());
+		enableDuringRequest = () => void fixture.session.setCacheWarmingOverride("on");
+		try {
+			await fixture.session.prompt("test");
+			await vi.waitFor(() => expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled"));
+			expect(fixture.providerCalls()).toBe(1);
 		} finally {
 			fixture.dispose();
 		}

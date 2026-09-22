@@ -125,11 +125,34 @@ Implementation:
 - Tests: `packages/coding-agent/test/keybindings.test.ts`, `test/suite/agent-session-model-extension.test.ts`, `test/rpc-prompt-response-semantics.test.ts`, `test/rpc.test.ts`
 - Docs: `packages/coding-agent/docs/keybindings.md`, `docs/quickstart.md`, `docs/rpc.md`, `README.md`, `CHANGELOG.md`
 
-## Prompt-cache warming uses upstream's `CacheWarmer`
+## Prompt-cache warming: fork policy on upstream's `CacheWarmer`
 
-The fork's own warming scheduler (`cache-warmup.ts`, `promptCacheWarmup` adapter options, `pi.cache-warm` session markers) was removed in the v0.87.0 merge in favor of upstream's `CacheWarmer` (v0.86.0), which replays the exact last request captured at the `streamFn` boundary. Fork-specific warming behavior is rebuilt on top of it in a follow-up.
+Upstream behavior: `cacheWarming` defaults to `streaming`. `CacheWarmer` replays the last captured request with a one-token cap at 90% of the TTL, only while the $0.05 expected-savings floor holds, for at most 60 min (running) or 30 min (idle), and only for requests captured in the current process. Failed refreshes are rescheduled silently; the miss cost uses the 5-minute write rate even for 1-hour entries.
 
-Merge note: fork request options carry the unresolved Pi thinking level (`ModelsSimpleStreamOptions`, see model-aware requests above), so `CacheWarmer`'s helpers accept that type and `isReplayable` treats `reasoning: "off"` as no thinking: `packages/coding-agent/src/core/cache-warmer.ts`.
+Fork behavior:
+
+- `cacheWarming` defaults to `off`.
+- `-kw` / `--keep-cache-warm` and `/warm [on|off]` set a process-only override (never persisted, survives `/resume` and `/new`). Effective mode `on` = warm while running and idle without the savings floor; economics are still computed for `/session`, and `cache_warming_decision` extensions can still stop it. Bare `/warm` reports the state.
+- One age cap for both phases: `cacheWarmingMaxAgeMinutes` (default 60, `/settings` number field), counted from the last real request.
+- Refresh 10 s before expiry, scheduled from the dispatch time of the last real request or refresh; the late-timer guard keeps half the margin (5 s).
+- Every `anthropic-messages` model refreshes with `max_tokens: 0` (documented pre-warm, no output billed), including proxies: only models with a declared `promptCache` are warmed, and a proxy rejecting the pre-warm fails the refresh visibly. The adapter sends `maxTokens: 0` requests non-streaming without server-side fallbacks and reads the JSON `BetaMessage`. Other APIs keep the one-token replay.
+- A refresh counts only with `usage.cacheRead > 0`; a refresh without a read, or a failed refresh, stops warming with `status.failed`.
+- Miss cost for `long` retention prices the rewrite at the 1-hour rate (`cacheWrite1h`).
+- Indicator above the editor while the effective mode is not `off`: held-warm time since the last real request, refresh count, maintenance cost, stop reason; warning border on failure. 1 s ticker.
+- Resume: after `bindExtensions` (session resume, `/fork`) and when idle warming is enabled (immediately while idle, at settlement when enabled mid-run), `CacheWarmer.restore()` rebuilds the transcript's last request (projection before the last assistant message, `context` hooks, `convertToLlm`, agent request options) and derives the lease from the last assistant timestamp and later `cache_warm` entries. No custom markers. Compaction, branch summaries, and context edits after that request, a model change, or an expired entry prevent the restore.
+
+Merge note: fork request options carry the unresolved Pi thinking level (`ModelsSimpleStreamOptions`, see model-aware requests above), so `CacheWarmer`'s helpers accept that type and `isReplayable` judges the clamped level. The constructor takes a policy getter (`{ mode, maxAgeMs }`) instead of upstream's mode getter, plus an optional request-rebuild function.
+
+Implementation:
+
+- Policy, scheduling, restore: `packages/coding-agent/src/core/cache-warmer.ts`
+- Override holder, policy getter, request rebuild: `packages/coding-agent/src/core/sdk.ts`, `src/core/agent-session-services.ts`, `src/main.ts`; `-kw`: `src/cli/args.ts`
+- Session API (`setCacheWarmingOverride`, `cacheWarmingMode`, restore triggers): `packages/coding-agent/src/core/agent-session.ts`
+- Settings: `packages/coding-agent/src/core/settings-manager.ts`, `src/modes/interactive/components/settings-selector.ts`
+- `/warm`, `/session`, indicator: `packages/coding-agent/src/modes/interactive/interactive-mode.ts`, `components/cache-warming-indicator.ts`, `chat-viewport.ts`, `src/core/slash-commands.ts`
+- `max_tokens: 0` pre-warm: `packages/ai/src/api/anthropic-messages.ts`
+- Tests: `packages/coding-agent/test/cache-warmer.test.ts`, `test/sdk-stream-options.test.ts`, `test/settings-manager.test.ts`, `test/args.test.ts`, `packages/ai/test/anthropic-cache-prewarm.test.ts`
+- Docs: `packages/coding-agent/docs/settings.md`, `docs/usage.md`, `README.md`
 
 ## Escape pauses the run at the next turn boundary
 

@@ -46,6 +46,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session file, ID, messages, tokens, and cost |
+| `/warm [on\|off]` | Show or set prompt cache warming for this process; see [Cache Warming](settings.md#cache-warming) |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/trust` | Save project trust decision for future sessions |
 | `/fork` | Create a new session from a previous user message |
@@ -250,6 +251,7 @@ pi --no-extensions -e ./my-extension.ts
 | `--tui-mode <mode>` | TUI mode: `regular` (default) or experimental `fullscreen` |
 | `--use-theme <name[/name]>` | Set the initial interactive theme for this run without changing settings |
 | `--verbose` | Force verbose startup |
+| `-kw`, `--keep-cache-warm` | Keep the prompt cache warm while running and idle, for this process only; see [Cache Warming](settings.md#cache-warming) |
 | `-a`, `--approve` | Trust project-local files for this run |
 | `-na`, `--no-approve` | Ignore project-local files for this run |
 | `--` | Stop option parsing; remaining arguments are prompts or `@file` inputs |

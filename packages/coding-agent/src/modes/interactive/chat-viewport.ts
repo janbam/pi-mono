@@ -8,6 +8,8 @@ export interface ChatViewportOptions {
 	readonly footer: Component;
 	readonly widgetsAbove?: Component;
 	readonly widgetsBelow?: Component;
+	/** JBMOD: cache-warming indicator, directly above the editor. */
+	readonly cacheWarming?: Component;
 	readonly scrollbar?: ScrollViewScrollbar;
 	readonly scrollbarTrackStyle?: (text: string) => string;
 	readonly scrollbarThumbStyle?: (text: string) => string;
@@ -32,6 +34,7 @@ export function createChatViewport(options: ChatViewportOptions): ChatViewport {
 		{ component: options.pendingMessages, shrink: 1, minSize: 0 },
 		{ component: options.status, shrink: 1, minSize: 0 },
 		...(options.widgetsAbove === undefined ? [] : [{ component: options.widgetsAbove, shrink: 1, minSize: 0 }]),
+		...(options.cacheWarming === undefined ? [] : [{ component: options.cacheWarming, shrink: 1, minSize: 0 }]),
 		{ component: options.editor, shrink: 1, minSize: 3 },
 		...(options.widgetsBelow === undefined ? [] : [{ component: options.widgetsBelow, shrink: 1, minSize: 0 }]),
 		{ component: options.footer, shrink: 1, minSize: 0 },

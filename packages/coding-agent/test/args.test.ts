@@ -337,6 +337,15 @@ describe("parseArgs", () => {
 		});
 	});
 
+	// JBMOD: process-only cache-warming override.
+	describe("--keep-cache-warm flag", () => {
+		test("parses --keep-cache-warm and its -kw shorthand", () => {
+			expect(parseArgs(["--keep-cache-warm"]).keepCacheWarm).toBe(true);
+			expect(parseArgs(["-kw"]).keepCacheWarm).toBe(true);
+			expect(parseArgs([]).keepCacheWarm).toBeUndefined();
+		});
+	});
+
 	describe("project approval flags", () => {
 		test("parses --approve", () => {
 			const result = parseArgs(["--approve"]);

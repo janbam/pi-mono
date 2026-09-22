@@ -394,17 +394,36 @@ describe("SettingsManager", () => {
 	});
 
 	describe("cacheWarming", () => {
-		it("defaults to streaming and ignores project settings", () => {
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+		// JBMOD: the fork defaults to off; warming costs money and is opted into.
+		it("defaults to off and ignores project settings", () => {
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
 
 			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ cacheWarming: "idle" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
 
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "idle" }));
 			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("idle");
 
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "bogus" }));
-			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("streaming");
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMode()).toBe("off");
+		});
+
+		it("reads the age cap globally as whole minutes of at least one", async () => {
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMaxAgeMinutes()).toBe(60);
+
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ cacheWarmingMaxAgeMinutes: 5 }));
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMaxAgeMinutes()).toBe(60);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setCacheWarmingMaxAgeMinutes(0.4);
+			await manager.flush();
+			expect(SettingsManager.create(projectDir, agentDir).getCacheWarmingMaxAgeMinutes()).toBe(1);
+			manager.setCacheWarmingMaxAgeMinutes(90.7);
+			await manager.flush();
+			expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toEqual({
+				cacheWarmingMaxAgeMinutes: 90,
+			});
+			expect(() => manager.setCacheWarmingMaxAgeMinutes(Number.NaN)).toThrow("Invalid cacheWarmingMaxAgeMinutes");
 		});
 
 		it("persists the mode globally", async () => {

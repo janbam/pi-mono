@@ -34,13 +34,14 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses, successful cache-warming usage, compaction or branch-summary usage, and provider recovery diagnostics such as dropped Anthropic thinking blocks |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
-| `cacheWarming` | string | `"streaming"` | Prompt cache-warming mode: `"off"`, `"streaming"`, or `"idle"`. Global setting only. |
+| `cacheWarming` | string | `"off"` | Prompt cache-warming mode: `"off"`, `"streaming"`, or `"idle"`. Global setting only. |
+| `cacheWarmingMaxAgeMinutes` | number | `60` | Stop warming this many minutes after the last real request, while running or idle. Global setting only. |
 
 #### Cache Warming
 
-Providers drop a prompt cache entry after a period of inactivity, so the first request after a pause pays full input price again. Cache warming re-sends the last request with a one-token output budget shortly before expiry:
+Providers drop a prompt cache entry after a period of inactivity, so the first request after a pause pays full input price again. Cache warming re-sends the last request ten seconds before expiry. Models on the Anthropic Messages API, including proxies with a declared `promptCache`, get the documented `max_tokens: 0` pre-warm, which bills no output; other APIs get a one-token output budget.
 
-- `"off"` disables warming.
+- `"off"` (default) disables warming.
 - `"streaming"` protects expensive prefixes during long tool executions and stops as soon as the agent settles.
 - `"idle"` also considers refreshes while waiting for your next prompt, using a fixed 15% continuation probability measured from real usage.
 
@@ -50,11 +51,15 @@ Providers drop a prompt cache entry after a period of inactivity, so the first r
 }
 ```
 
-A refresh is sent only when the expected avoided cache-miss cost, minus the cost of the refresh, leaves at least $0.05 of expected savings. Active agent runs use 100% continuation probability. `/session` shows the next decision, continuation probability, expected savings, threshold, and estimated costs. When cache miss notices are enabled, each successful refresh appears in the transcript with its cost; notices identify extension overrides.
+A refresh is sent only when the expected avoided cache-miss cost, minus the cost of the refresh, leaves at least $0.05 of expected savings. Active agent runs use 100% continuation probability. A lost 1-hour entry is priced at the 1-hour write rate. `/session` shows the next decision, continuation probability, expected savings, threshold, and estimated costs. When cache miss notices are enabled, each successful refresh appears in the transcript with its cost; notices identify extension overrides.
 
-Warming stops when the context changes (model switch, compaction, branch navigation). Idle warming stops no later than 30 minutes after the last real provider request; warming during an active agent run stops after 60 minutes. Extensions can override each decision through the [`cache_warming_decision`](extensions.md#cache_warming_decision) event.
+`--keep-cache-warm` (`-kw`) and `/warm on` enable warming for the current process only, overriding the setting without writing it. This explicit mode warms while running and idle and skips the $0.05 savings floor, so it warms until the age limit. `/warm off` disables warming for the process, and bare `/warm` shows the state. While warming is enabled, a line above the editor shows how long the cache has been held warm, the refresh count, and their cost.
 
-Each refresh is billed as a cache read of the full context plus one output token. Usage and cost show up in session totals but never enter model context. Pi schedules candidates at 90% of the cache lifetime while leaving at least ten seconds before expiry.
+Warming stops when the context changes (model switch, compaction, branch navigation), when `cacheWarmingMaxAgeMinutes` have passed since the last real provider request, when a refresh fails, or when a refresh reads nothing from the cache (the entry expired or the replay no longer matches it). Extensions can override each decision through the [`cache_warming_decision`](extensions.md#cache_warming_decision) event; they can stop explicit warming too.
+
+Resuming a session (`--continue`, `/resume`) or enabling idle warming picks up the transcript's last request when its cache entry is still alive. Pi rebuilds that request through the normal request pipeline, including extension `context` handlers, and derives the entry's remaining lifetime from the last response and later refreshes. If the rebuild differs from what was sent, the first refresh misses the cache and warming stops.
+
+Each refresh is billed as a cache read of the full context plus at most one output token. Usage and cost show up in session totals but never enter model context.
 
 Warming needs a known cache lifetime for the model and the retention tier the request used (`short`, or `long` with `PI_CACHE_RETENTION=long`). The built-in catalog carries lifetimes for direct Anthropic; custom models and other providers can declare theirs with `promptCache` in `models.json` (see [Prompt Cache Lifetimes](models.md#prompt-cache-lifetimes)). Claude models that use budget-based rather than adaptive thinking are skipped while thinking is on, because Anthropic derives the thinking budget from `max_tokens` and keys the message cache on it, so a one-token request cannot reproduce the entry.
 

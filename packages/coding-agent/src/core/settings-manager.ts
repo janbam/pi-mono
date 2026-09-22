@@ -154,7 +154,8 @@ export interface Settings {
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
-	cacheWarming?: CacheWarmingMode; // default: "streaming"; global only because each refresh costs money
+	cacheWarming?: CacheWarmingMode; // default: "off" (JBMOD); global only because each refresh costs money
+	cacheWarmingMaxAgeMinutes?: number; // default: 60 (JBMOD); warming stops this long after the last real request; global only
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
@@ -955,12 +956,30 @@ export class SettingsManager {
 	/** Read from global settings only because warming costs money. */
 	getCacheWarmingMode(): CacheWarmingMode {
 		const mode = this.globalSettings.cacheWarming;
-		return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : "streaming";
+		// JBMOD: off by default; warming is opted into via settings, -kw, or /warm on.
+		return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : "off";
 	}
 
 	setCacheWarmingMode(mode: CacheWarmingMode): void {
 		this.globalSettings.cacheWarming = mode;
 		this.markModified("cacheWarming");
+		this.save();
+	}
+
+	/** Minutes after the last real request when warming stops, whole and at least 1. Global only because it bounds spend. */
+	getCacheWarmingMaxAgeMinutes(): number {
+		const minutes = this.globalSettings.cacheWarmingMaxAgeMinutes;
+		if (typeof minutes !== "number" || !Number.isFinite(minutes)) return 60;
+		return Math.max(1, Math.floor(minutes));
+	}
+
+	/** Persist the warming age cap as whole minutes, at least 1. */
+	setCacheWarmingMaxAgeMinutes(minutes: number): void {
+		if (!Number.isFinite(minutes)) {
+			throw new Error(`Invalid cacheWarmingMaxAgeMinutes setting: ${String(minutes)}`);
+		}
+		this.globalSettings.cacheWarmingMaxAgeMinutes = Math.max(1, Math.floor(minutes));
+		this.markModified("cacheWarmingMaxAgeMinutes");
 		this.save();
 	}
 

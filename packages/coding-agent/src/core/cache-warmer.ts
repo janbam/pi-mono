@@ -1,5 +1,7 @@
 import {
 	type Api,
+	type AssistantMessage,
+	type CacheRetention,
 	type Context,
 	calculateCost,
 	clampThinkingLevel,
@@ -12,10 +14,8 @@ import type { ModelRuntime } from "./model-runtime.ts";
 import type { SessionEntry, SessionManager, UsageEntry } from "./session-manager.ts";
 import type { CacheWarmingMode } from "./settings-manager.ts";
 
-/** Streaming warming never continues past this long after the real request that started it. */
-const MAX_WARMING_AGE_MS = 60 * 60_000;
-/** Idle warming uses a shorter horizon because continuation estimates become less reliable with age. */
-const MAX_IDLE_WARMING_AGE_MS = 30 * 60_000;
+/** JBMOD: refresh this long before the cache entry expires (upstream: at 90% of the TTL). */
+const REFRESH_MARGIN_MS = 10_000;
 /** A refresh is sent only when it is expected to save at least this many dollars. */
 const CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS = 0.05;
 /**
@@ -25,10 +25,38 @@ const CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS = 0.05;
  */
 const IDLE_CONTINUATION_PROBABILITY = 0.15;
 
-/** Refresh at 90% of the TTL while preserving at least ten seconds of margin. */
+/**
+ * JBMOD: warming mode after the process override is applied. "on" comes from `-kw` or
+ * `/warm on`: warm while running and idle like "idle", but without the savings floor.
+ */
+export type CacheWarmingEffectiveMode = CacheWarmingMode | "on";
+
+/**
+ * JBMOD: process-only warming override from `-kw` or `/warm`. Never persisted; the holder is
+ * created once per process and shared by every session so it survives `/resume` and `/new`.
+ * `mode` undefined follows the `cacheWarming` setting.
+ */
+export interface CacheWarmingOverride {
+	mode?: "on" | "off";
+}
+
+/** JBMOD: the settings the warmer reads live on every decision. */
+export interface CacheWarmingPolicy {
+	mode: CacheWarmingEffectiveMode;
+	/** Warming stops once the next refresh would be this long after the last real request. */
+	maxAgeMs: number;
+}
+
+/** Refresh `REFRESH_MARGIN_MS` before expiry; undefined when the TTL leaves no room for that. */
 export function getCacheWarmingDelayMs(ttlMs: number): number | undefined {
-	if (ttlMs <= 10_000) return undefined;
-	return Math.max(1, Math.floor(Math.min(ttlMs * 0.9, ttlMs - 10_000)));
+	if (ttlMs <= REFRESH_MARGIN_MS) return undefined;
+	return ttlMs - REFRESH_MARGIN_MS;
+}
+
+function getPromptCacheRetention(options: ModelsSimpleStreamOptions | undefined): CacheRetention {
+	return (
+		options?.cacheRetention ?? (getProviderEnvValue("PI_CACHE_RETENTION", options?.env) === "long" ? "long" : "short")
+	);
 }
 
 /**
@@ -40,9 +68,7 @@ export function getPromptCacheTtlMs(
 	model: Model<Api>,
 	options: ModelsSimpleStreamOptions | undefined,
 ): number | undefined {
-	const retention =
-		options?.cacheRetention ??
-		(getProviderEnvValue("PI_CACHE_RETENTION", options?.env) === "long" ? "long" : "short");
+	const retention = getPromptCacheRetention(options);
 	if (retention === "none") return undefined;
 	const seconds = model.promptCache?.[retention];
 	return seconds === undefined ? undefined : seconds * 1000;
@@ -64,6 +90,16 @@ export function isReplayable(model: Model<Api>, options: ModelsSimpleStreamOptio
 	return (model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true;
 }
 
+/**
+ * JBMOD: output cap of a refresh. Anthropic documents `max_tokens: 0` as a cache pre-warm that
+ * bills no output. Only models with a declared `promptCache` are warmed, so an Anthropic-API
+ * proxy reaching this point was declared Anthropic-cache compatible; one that rejects the
+ * pre-warm fails the refresh, which stops warming visibly.
+ */
+export function getCacheWarmingMaxTokens(model: Model<Api>): number {
+	return model.api === "anthropic-messages" ? 0 : 1;
+}
+
 /** Prompt size of the most recent real request on the branch, as reported by the provider. */
 function lastPromptTokens(entries: SessionEntry[]): number {
 	for (let index = entries.length - 1; index >= 0; index--) {
@@ -76,9 +112,60 @@ function lastPromptTokens(entries: SessionEntry[]): number {
 	return 0;
 }
 
+/** JBMOD: the cache lease left by the transcript's last real request, as needed to resume warming it. */
+interface RestorableLease {
+	/** The last real response; its request is what gets rebuilt and replayed. */
+	message: AssistantMessage;
+	/** Dispatch time of that request (assistant timestamps are taken at request start). */
+	requestAt: number;
+	/** Latest time the entry's TTL was renewed, by that request or a later refresh. */
+	leaseStartedAt: number;
+	refreshCount: number;
+	refreshCost: number;
+}
+
+/**
+ * JBMOD: walk back from the branch tip to the last real request, collecting the refreshes that
+ * renewed its entry since. Returns a stop reason when that request cannot be warmed anymore.
+ * Refresh usage entries are written after their response, so their timestamps overstate the
+ * lease by the refresh latency; the pre-expiry margin absorbs that.
+ */
+function findRestorableLease(entries: SessionEntry[]): RestorableLease | string {
+	let refreshCount = 0;
+	let refreshCost = 0;
+	let lastRefreshAt: number | undefined;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type === "usage" && entry.kind === "cache_warm") {
+			refreshCount++;
+			refreshCost += entry.usage.cost.total;
+			lastRefreshAt ??= Date.parse(entry.timestamp);
+			continue;
+		}
+		// These rewrite the prefix the next request sends, so the cached entry no longer matches it.
+		if (entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "context_edit") {
+			return "context rewritten since the last request";
+		}
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const message = entry.message;
+			if (message.usage.cacheRead + message.usage.cacheWrite === 0) {
+				return "last request did not use the prompt cache";
+			}
+			return {
+				message,
+				requestAt: message.timestamp,
+				leaseStartedAt: Math.max(message.timestamp, lastRefreshAt ?? 0),
+				refreshCount,
+				refreshCost,
+			};
+		}
+	}
+	return "waiting for first request";
+}
+
 function price(
 	model: Model<Api>,
-	tokens: Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite">>,
+	tokens: Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite" | "cacheWrite1h">>,
 ): number {
 	const usage: Usage = {
 		input: 0,
@@ -90,6 +177,10 @@ function price(
 		...tokens,
 	};
 	return calculateCost(model, usage).total;
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 export type CacheWarmingAction = "warm" | "stop";
@@ -108,7 +199,9 @@ export interface CacheWarmingDecision {
 	expectedSavings: number;
 	/** False when the prompt size or the model's prices are unknown. */
 	economicsAvailable: boolean;
-	/** Pi's decision: "warm" when `expectedSavings` is at least $0.05. */
+	/** JBMOD: warming was enabled explicitly (`-kw`, `/warm on`), so the savings floor does not apply. */
+	explicit: boolean;
+	/** Pi's decision: "warm" when `expectedSavings` is at least $0.05, or always when `explicit`. */
 	action: CacheWarmingAction;
 }
 
@@ -131,11 +224,18 @@ export interface CacheWarmingStatus {
 	state: "inactive" | "scheduled" | "refreshing";
 	/** Why nothing is scheduled. */
 	reason?: string;
+	/** JBMOD: warming stopped because a refresh failed or missed the cache, not by policy. */
+	failed?: boolean;
 	nextWarmAt?: number;
 	/** The pending decision, or the decision that stopped warming. */
 	decision?: CacheWarmingDecision;
 	/** True when an extension changed `decision.action`. */
 	extensionOverride?: boolean;
+	/** JBMOD: time of the real request whose cache entry is being held warm. */
+	warmSince?: number;
+	/** JBMOD: refreshes sent for that request, and their summed cost. */
+	refreshCount?: number;
+	refreshCost?: number;
 }
 
 /** The request whose prompt cache entry should be kept warm, exactly as it was sent. */
@@ -145,16 +245,32 @@ export interface CacheWarmRequest {
 	options: ModelsSimpleStreamOptions;
 }
 
-interface ActiveRun extends CacheWarmRequest {
+/** JBMOD: a request rebuilt from the transcript, with the staleness check for the live session. */
+export interface RebuiltCacheWarmRequest {
+	request: CacheWarmRequest;
+	/** False once the session's model or messages no longer match the request. */
+	isCurrent: () => boolean;
+}
+
+/** Where a new run starts: fresh from a real request, or resumed from a transcript lease. */
+interface RunStart {
+	startedAt: number;
+	leaseStartedAt: number;
+	phase: "streaming" | "idle";
+	refreshCount: number;
+	refreshCost: number;
+}
+
+interface ActiveRun extends CacheWarmRequest, RunStart {
 	/** False once the session's model or messages no longer match the request. */
 	isCurrent: () => boolean;
 	ttlMs: number;
 	delayMs: number;
+	/** JBMOD: the request wrote a 1-hour entry, so a miss re-pays the 1-hour write rate. */
+	longRetention: boolean;
 	/** Latest safe time to send this refresh, leaving half the original expiry margin. */
 	refreshDeadlineAt: number;
-	startedAt: number;
 	controller: AbortController;
-	phase: "streaming" | "idle";
 	nextWarmAt: number;
 	/** Set while a refresh that an extension forced is in flight. */
 	extensionOverride: boolean;
@@ -163,41 +279,49 @@ interface ActiveRun extends CacheWarmRequest {
 
 /**
  * Keeps one prompt cache entry alive by re-sending its request with a
- * one-token output cap before the entry expires. `start` replaces any
- * previous run; warm requests never extend the fixed safety windows.
+ * zero- or one-token output cap before the entry expires. `start` replaces any
+ * previous run; warm requests never extend the age cap, which counts from the
+ * last real request.
  */
 export class CacheWarmer {
 	private run?: ActiveRun;
 	private inactive: CacheWarmingStatus;
+	/** Bumped whenever a run begins, so an async `restore` can tell that a real request took over. */
+	private generation = 0;
 	private readonly models: Pick<ModelRuntime, "streamSimple">;
 	private readonly sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">;
-	private readonly getMode: () => CacheWarmingMode;
+	private readonly getPolicy: () => CacheWarmingPolicy;
 	/** Lets extensions override `event.action`; failures fall back to pi's decision. */
 	private readonly decide: (event: CacheWarmingDecisionEvent) => Promise<CacheWarmingAction>;
+	/** JBMOD: rebuilds the transcript's last real request for `restore`; absent means no restore. */
+	private readonly rebuildLastRequest?: () => Promise<RebuiltCacheWarmRequest | undefined>;
 	/** Called with the persisted usage entry after each successful refresh. */
 	onWarmed?: (entry: UsageEntry) => void;
 
 	constructor(
 		models: Pick<ModelRuntime, "streamSimple">,
 		sessionManager: Pick<SessionManager, "appendUsage" | "getBranch">,
-		getMode: () => CacheWarmingMode,
+		getPolicy: () => CacheWarmingPolicy,
 		decide: (event: CacheWarmingDecisionEvent) => Promise<CacheWarmingAction> = async (event) => event.action,
+		rebuildLastRequest?: () => Promise<RebuiltCacheWarmRequest | undefined>,
 	) {
 		this.models = models;
 		this.sessionManager = sessionManager;
-		this.getMode = getMode;
+		this.getPolicy = getPolicy;
 		this.decide = decide;
+		this.rebuildLastRequest = rebuildLastRequest;
 		this.inactive = { state: "inactive", reason: "waiting for first request" };
 	}
 
 	get status(): CacheWarmingStatus {
-		if (this.getMode() === "off") return { state: "inactive", reason: "cache warming disabled" };
+		const mode = this.getPolicy().mode;
+		if (mode === "off") return { state: "inactive", reason: "cache warming disabled" };
 		const run = this.run;
 		if (!run) return this.inactive;
 		if (!run.isCurrent()) return { state: "inactive", reason: "conversation context changed" };
 		const decision = this.evaluate(run);
 		const refreshing = run.timer === undefined;
-		if (!decision.economicsAvailable && !refreshing) {
+		if (!decision.economicsAvailable && !refreshing && mode !== "on") {
 			return { state: "inactive", reason: "cache economics unavailable" };
 		}
 		return {
@@ -205,14 +329,104 @@ export class CacheWarmer {
 			nextWarmAt: run.nextWarmAt,
 			decision,
 			extensionOverride: run.extensionOverride,
+			warmSince: run.startedAt,
+			refreshCount: run.refreshCount,
+			refreshCost: run.refreshCost,
 		};
 	}
 
 	/** Keep the prompt cache entry written by `request` warm while `isCurrent` holds. */
 	start(request: CacheWarmRequest, isCurrent: () => boolean): void {
+		const now = Date.now();
+		this.begin(request, isCurrent, {
+			startedAt: now,
+			leaseStartedAt: now,
+			phase: "streaming",
+			refreshCount: 0,
+			refreshCost: 0,
+		});
+	}
+
+	/**
+	 * JBMOD: resume warming the transcript's last real request after a session resume or an
+	 * explicit enable while idle. Only while idle warming is enabled and nothing is warming yet.
+	 * Reconstruction mismatches cost at most one refresh: its missing cache read stops warming.
+	 */
+	async restore(): Promise<void> {
+		const mode = this.getPolicy().mode;
+		if ((mode !== "idle" && mode !== "on") || this.run || !this.rebuildLastRequest) return;
+		const lease = findRestorableLease(this.sessionManager.getBranch());
+		if (typeof lease === "string") {
+			this.stop(lease);
+			return;
+		}
+		// Rebuilding awaits extension context hooks; a real request that starts meanwhile owns warming.
+		const generation = this.generation;
+		let rebuilt: RebuiltCacheWarmRequest | undefined;
+		try {
+			rebuilt = await this.rebuildLastRequest();
+		} catch (error) {
+			if (generation === this.generation && !this.run) {
+				this.stop(`could not rebuild the last request: ${errorText(error)}`, { failed: true });
+			}
+			return;
+		}
+		if (generation !== this.generation || this.run) return;
+		if (!rebuilt) {
+			this.stop("waiting for first request");
+			return;
+		}
+		// The rebuilt request uses the session's current model; a different one has a different cache.
+		const { model } = rebuilt.request;
+		if (model.provider !== lease.message.provider || model.id !== lease.message.model) {
+			this.stop("model changed since the last request");
+			return;
+		}
+		this.begin(rebuilt.request, rebuilt.isCurrent, {
+			startedAt: lease.requestAt,
+			leaseStartedAt: lease.leaseStartedAt,
+			phase: "idle",
+			refreshCount: lease.refreshCount,
+			refreshCost: lease.refreshCost,
+		});
+	}
+
+	onAgentSettled(): void {
+		const run = this.run;
+		if (!run) return;
+		if (this.getPolicy().mode === "streaming") {
+			this.stop("agent run settled");
+			return;
+		}
+		// The scheduled refresh already respects the age cap, which is the same for both phases.
+		run.phase = "idle";
+	}
+
+	/** Reconcile an active run after the effective warming mode changes. */
+	onModeChanged(): void {
+		const run = this.run;
+		if (!run) {
+			// JBMOD: a stale "disabled" reason would contradict a mode that now warms.
+			if (this.getPolicy().mode !== "off" && this.inactive.reason === "cache warming disabled") {
+				this.inactive = { state: "inactive", reason: "waiting for first request" };
+			}
+			return;
+		}
+		const reason = this.getModeStopReason(run);
+		if (reason) this.stop(reason);
+	}
+
+	cancel(): void {
+		// JBMOD: also invalidate an in-flight restore, so a disposed session never resumes warming.
+		this.generation++;
+		this.stop("inactive");
+	}
+
+	/** Validate `request` and arm its first refresh; shared by live capture and transcript restore. */
+	private begin(request: CacheWarmRequest, isCurrent: () => boolean, runStart: RunStart): void {
 		this.clearRun();
-		const mode = this.getMode();
-		if (mode === "off") {
+		this.generation++;
+		if (this.getPolicy().mode === "off") {
 			this.stop("cache warming disabled");
 			return;
 		}
@@ -236,43 +450,17 @@ export class CacheWarmer {
 		}
 		this.run = {
 			...request,
+			...runStart,
 			isCurrent,
 			ttlMs,
 			delayMs,
+			longRetention: getPromptCacheRetention(request.options) === "long",
 			refreshDeadlineAt: 0,
-			startedAt: Date.now(),
 			controller: new AbortController(),
-			phase: "streaming",
 			nextWarmAt: 0,
 			extensionOverride: false,
 		};
 		this.schedule(this.run);
-	}
-
-	onAgentSettled(): void {
-		const run = this.run;
-		if (!run) return;
-		if (this.getMode() === "streaming") {
-			this.stop("agent run settled");
-			return;
-		}
-		run.phase = "idle";
-		const deadline = run.startedAt + MAX_IDLE_WARMING_AGE_MS;
-		if (run.nextWarmAt > deadline || Date.now() >= deadline) {
-			this.stop("30-minute idle safety limit reached");
-		}
-	}
-
-	/** Reconcile an active run after the persisted warming mode changes. */
-	onModeChanged(): void {
-		const run = this.run;
-		if (!run) return;
-		const reason = this.getModeStopReason(run);
-		if (reason) this.stop(reason);
-	}
-
-	cancel(): void {
-		this.stop("inactive");
 	}
 
 	private clearRun(): void {
@@ -283,31 +471,49 @@ export class CacheWarmer {
 		run.controller.abort();
 	}
 
-	private stop(reason: string, stopped?: Pick<CacheWarmingStatus, "decision" | "extensionOverride">): void {
+	private stop(reason: string, stopped?: Pick<CacheWarmingStatus, "decision" | "extensionOverride" | "failed">): void {
 		this.clearRun();
 		this.inactive = { state: "inactive", reason, ...stopped };
 	}
 
+	/** Arm the next refresh relative to the last renewal of the entry, within expiry and age limits. */
 	private schedule(run: ActiveRun): void {
 		run.extensionOverride = false;
-		run.nextWarmAt = Date.now() + run.delayMs;
+		run.nextWarmAt = run.leaseStartedAt + run.delayMs;
 		// A timer can run late after sleep or event-loop blockage. Keep half of
 		// the planned pre-expiry margin for that delay and request dispatch; a
 		// late refresh is likely a full-price cache write, not a cache warm.
 		run.refreshDeadlineAt = run.nextWarmAt + Math.floor((run.ttlMs - run.delayMs) / 2);
-		const deadline = run.startedAt + (run.phase === "idle" ? MAX_IDLE_WARMING_AGE_MS : MAX_WARMING_AGE_MS);
-		if (run.nextWarmAt > deadline || Date.now() >= deadline) {
-			this.stop(run.phase === "idle" ? "30-minute idle safety limit reached" : "one-hour safety limit reached");
+		if (Date.now() > run.refreshDeadlineAt) {
+			this.stop("prompt cache already expired");
+			return;
+		}
+		const capReason = this.getAgeCapStopReason(run);
+		if (capReason) {
+			this.stop(capReason);
 			return;
 		}
 		run.timer = setTimeout(() => void this.refresh(run), Math.max(0, run.nextWarmAt - Date.now()));
 		run.timer.unref?.();
 	}
 
+	/** JBMOD: stop reason once the next refresh would fall past the age cap, read live from settings. */
+	private getAgeCapStopReason(run: ActiveRun): string | undefined {
+		const { maxAgeMs } = this.getPolicy();
+		if (run.nextWarmAt <= run.startedAt + maxAgeMs) return undefined;
+		return `${Math.round(maxAgeMs / 60_000)}-minute warming limit reached`;
+	}
+
 	private async refresh(run: ActiveRun): Promise<void> {
 		run.timer = undefined;
 		if (!this.validateRun(run)) return;
 		if (this.refreshDeadlineMissed(run)) return;
+		// The cap may have been lowered since this refresh was armed.
+		const capReason = this.getAgeCapStopReason(run);
+		if (capReason) {
+			this.stop(capReason);
+			return;
+		}
 		const decision = this.evaluate(run);
 		const { warmCost, missCost, continuationProbability } = decision;
 		let action = decision.action;
@@ -335,30 +541,44 @@ export class CacheWarmer {
 		}
 
 		run.extensionOverride = extensionOverride;
+		// The TTL renews from the moment the refresh is dispatched, not when its response arrives.
+		const dispatchedAt = Date.now();
 		try {
 			const message = await this.models
 				.streamSimple(run.model, run.context, {
 					...run.options,
-					maxTokens: 1,
+					maxTokens: getCacheWarmingMaxTokens(run.model),
 					maxRetries: 0,
 					signal: run.controller.signal,
 				})
 				.result();
 			if (!this.validateRun(run)) return;
-			if (message.stopReason !== "error" && message.stopReason !== "aborted") {
-				const entry = this.sessionManager.appendUsage(
-					"cache_warm",
-					message.provider,
-					message.responseModel ?? message.model,
-					message.usage,
-					extensionOverride ? "extension override" : undefined,
-				);
-				this.onWarmed?.(entry);
+			if (message.stopReason === "error" || message.stopReason === "aborted") {
+				throw new Error(message.errorMessage ?? `refresh ${message.stopReason}`);
 			}
-		} catch {
-			// Cache warming is best-effort and must not affect the active agent run.
+			const entry = this.sessionManager.appendUsage(
+				"cache_warm",
+				message.provider,
+				message.responseModel ?? message.model,
+				message.usage,
+				extensionOverride ? "extension override" : undefined,
+			);
+			run.refreshCount++;
+			run.refreshCost += message.usage.cost.total;
+			this.onWarmed?.(entry);
+			// JBMOD: only a cache read proves the entry was alive and the replay matched it. A
+			// write-only refresh paid for a new entry the next real request may never read.
+			if (message.usage.cacheRead === 0) {
+				this.stop("refresh missed the cache (entry expired or replay differs)", { failed: true });
+				return;
+			}
+		} catch (error) {
+			// JBMOD: stop loudly instead of retrying; a retry after the margin would be a full-price write.
+			if (this.run === run) this.stop(`cache refresh failed: ${errorText(error)}`, { failed: true });
+			return;
 		}
-		if (this.run === run) this.schedule(run);
+		run.leaseStartedAt = dispatchedAt;
+		this.schedule(run);
 	}
 
 	private refreshDeadlineMissed(run: ActiveRun): boolean {
@@ -376,7 +596,7 @@ export class CacheWarmer {
 	}
 
 	private getModeStopReason(run: ActiveRun): string | undefined {
-		const mode = this.getMode();
+		const mode = this.getPolicy().mode;
 		if (mode === "off") return "cache warming disabled";
 		if (mode === "streaming" && run.phase === "idle") return "agent run settled";
 		return undefined;
@@ -384,11 +604,15 @@ export class CacheWarmer {
 
 	private evaluate(run: ActiveRun): CacheWarmingDecision {
 		const model = run.model;
+		const explicit = this.getPolicy().mode === "on";
 		const promptTokens = lastPromptTokens(this.sessionManager.getBranch());
 		const cacheHitCost = price(model, { cacheRead: promptTokens });
+		// JBMOD: a lost 1-hour entry is rewritten at the 1-hour rate (2x input), not the 5-minute rate.
 		const cacheMissCost = price(
 			model,
-			model.cost.cacheWrite > 0 ? { cacheWrite: promptTokens } : { input: promptTokens },
+			model.cost.cacheWrite > 0
+				? { cacheWrite: promptTokens, ...(run.longRetention ? { cacheWrite1h: promptTokens } : {}) }
+				: { input: promptTokens },
 		);
 		const warmCost = price(model, { cacheRead: promptTokens, output: 1 });
 		const missCost = Math.max(0, cacheMissCost - cacheHitCost);
@@ -402,7 +626,8 @@ export class CacheWarmer {
 			continuationProbability,
 			expectedSavings,
 			economicsAvailable,
-			action: expectedSavings >= CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS ? "warm" : "stop",
+			explicit,
+			action: explicit || expectedSavings >= CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS ? "warm" : "stop",
 		};
 	}
 }
@@ -418,6 +643,9 @@ function formatCacheWarmingEconomics(decision: CacheWarmingDecision): string {
 		decision.phase === "streaming"
 			? `${probability}% continuation probability while agent is running`
 			: `${probability}% continuation probability`;
+	if (decision.explicit) {
+		return `${probabilityText}, expected savings ${formatDollars(decision.expectedSavings)}, savings floor skipped (enabled explicitly)`;
+	}
 	const comparison = decision.action === "warm" ? ">=" : "<";
 	return `${probabilityText}, expected savings ${formatDollars(decision.expectedSavings)} ${comparison} $${CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS.toFixed(3)}`;
 }

@@ -140,6 +140,7 @@ import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
+import { CacheWarmingIndicator, formatCacheWarmingIndicator } from "./components/cache-warming-indicator.ts";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
@@ -548,6 +549,9 @@ export class InteractiveMode {
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
+	/** JBMOD: cache-warming reminder above the editor, re-rendered each second by `cacheWarmingTicker`. */
+	private cacheWarmingIndicator!: CacheWarmingIndicator;
+	private cacheWarmingTicker?: ReturnType<typeof setInterval>;
 	private turnUsage: UsageTotals | undefined;
 
 	// Custom footer from extension (undefined = use built-in footer)
@@ -619,6 +623,11 @@ export class InteractiveMode {
 		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
+		// Read through `this.session` on every render: the session object changes on /resume and /new.
+		this.cacheWarmingIndicator = new CacheWarmingIndicator(() => ({
+			mode: this.session.cacheWarmingMode,
+			status: this.session.cacheWarmingStatus,
+		}));
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -947,6 +956,7 @@ export class InteractiveMode {
 			pendingMessages: this.pendingMessagesContainer,
 			status: this.statusContainer,
 			widgetsAbove: this.widgetContainerAbove,
+			cacheWarming: this.cacheWarmingIndicator,
 			editor: this.editorContainer,
 			widgetsBelow: this.widgetContainerBelow,
 			footer: this.footerContainer,
@@ -961,10 +971,16 @@ export class InteractiveMode {
 			this.pendingMessagesContainer,
 			this.statusContainer,
 			this.widgetContainerAbove,
+			this.cacheWarmingIndicator,
 			this.editorContainer,
 			this.widgetContainerBelow,
 			this.footerContainer,
 		]);
+		// JBMOD: keep the indicator's elapsed time live; skip renders while warming is off.
+		this.cacheWarmingTicker = setInterval(() => {
+			if (this.cacheWarmingIndicator.isVisible()) this.ui.requestRender();
+		}, 1000);
+		this.cacheWarmingTicker.unref?.();
 		// Accept text while startup completes, but only enable interrupt, exit, and submission feedback.
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
@@ -3309,6 +3325,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/warm" || text.startsWith("/warm ")) {
+				await this.handleWarmCommand(text);
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
@@ -5024,6 +5045,7 @@ export class InteractiveMode {
 					transport: this.settingsManager.getTransport(),
 					httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
 					cacheWarmingMode: this.settingsManager.getCacheWarmingMode(),
+					cacheWarmingMaxAgeMinutes: this.settingsManager.getCacheWarmingMaxAgeMinutes(),
 					thinkingLevel: this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
 					availableThinkingLevels: [...THINKING_LEVEL_OPTIONS],
 					modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
@@ -5101,6 +5123,13 @@ export class InteractiveMode {
 					onCacheWarmingModeChange: (mode) => {
 						this.session.setCacheWarmingMode(mode);
 						this.showStatus(`Cache warming: ${mode}`);
+					},
+					onCacheWarmingMaxAgeMinutesChange: (minutes) => {
+						// The warmer reads the cap live when it schedules the next refresh.
+						this.settingsManager.setCacheWarmingMaxAgeMinutes(minutes);
+						this.showStatus(
+							`Cache warming limit: ${this.settingsManager.getCacheWarmingMaxAgeMinutes()} minutes`,
+						);
 					},
 					onModelThinkingLevelChange: (provider, modelId, level) => {
 						this.settingsManager.setModelThinkingLevel(provider, modelId, level);
@@ -6734,6 +6763,28 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	/**
+	 * JBMOD: `/warm [on|off]` sets the process-only warming override (never persisted); bare `/warm`
+	 * reports the current state. "on" warms while running and idle without the savings floor.
+	 */
+	private async handleWarmCommand(text: string): Promise<void> {
+		const argument = text.slice("/warm".length).trim().toLowerCase();
+		if (argument === "on" || argument === "off") {
+			// Wait for a transcript restore so the reported state is the one warming actually reached.
+			await this.session.setCacheWarmingOverride(argument);
+		} else if (argument) {
+			this.showWarning("Usage: /warm [on|off]");
+			return;
+		}
+		const mode = this.session.cacheWarmingMode;
+		this.showStatus(
+			mode === "off"
+				? "Cache warming: off for this process"
+				: formatCacheWarmingIndicator({ mode, status: this.session.cacheWarmingStatus }),
+		);
+		this.ui.requestRender();
+	}
+
 	private handleSessionCommand(): void {
 		const stats = this.session.getSessionStats();
 		const sessionName = this.sessionManager.getSessionName();
@@ -6776,7 +6827,8 @@ export class InteractiveMode {
 
 		const cacheWarmingStatus = this.session.cacheWarmingStatus;
 		info += `\n${theme.bold("Cache Warming")}\n`;
-		info += `${theme.fg("dim", "Mode:")} ${this.settingsManager.getCacheWarmingMode()}\n`;
+		const warmingSource = this.session.cacheWarmingOverride ? "process override from -kw or /warm" : "settings";
+		info += `${theme.fg("dim", "Mode:")} ${this.session.cacheWarmingMode} ${theme.fg("dim", `(${warmingSource})`)}\n`;
 		info += `${theme.fg("dim", "Status:")} ${cacheWarmingStatus ? formatCacheWarmingStatus(cacheWarmingStatus) : "Inactive (cache warming unavailable)"}\n`;
 		const decision = cacheWarmingStatus?.decision;
 		if (decision?.economicsAvailable) {
@@ -7137,6 +7189,7 @@ export class InteractiveMode {
 
 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
 		this.disposeActiveSelector();
+		clearInterval(this.cacheWarmingTicker);
 		if (this.settingsManager.getShowTerminalProgress()) {
 			this.ui.terminal.setProgress(false);
 		}
