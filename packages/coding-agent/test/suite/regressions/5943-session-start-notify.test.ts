@@ -76,17 +76,10 @@ type LoadedResourcesContext = {
 };
 
 type RebindContext = {
-	session: { setBeforeProviderRequest: (callback: () => void | Promise<void>) => void };
-	cacheWarmController: {
-		pause: () => Promise<void>;
-		rebind: (session: RebindContext["session"], options?: { resume?: boolean }) => Promise<void>;
-		resume: () => Promise<void>;
-	};
 	unsubscribe?: () => void;
 	applyRuntimeSettings: () => void;
 	renderCurrentSessionState: () => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
-	bindCacheWarmSessionHooks: () => void;
 	subscribeToAgent: () => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
@@ -95,11 +88,6 @@ type RebindContext = {
 
 type ReloadCommandContext = {
 	hideThinkingBlock: boolean;
-	cacheWarmController: {
-		pause: () => Promise<void>;
-		invalidate: () => Promise<void>;
-		resume: () => Promise<void>;
-	};
 	session: {
 		isStreaming: boolean;
 		isCompacting: boolean;
@@ -169,13 +157,6 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 	const editor = overrides.editor ?? {};
 	return {
 		hideThinkingBlock: overrides.hideThinkingBlock ?? false,
-		// Keep direct prototype tests wired to the same lifecycle contract as a constructed interactive mode.
-		cacheWarmController: {
-			pause: async () => {},
-			invalidate: async () => {},
-			resume: async () => {},
-			...overrides.cacheWarmController,
-		},
 		session: {
 			isStreaming: false,
 			isCompacting: false,
@@ -305,12 +286,8 @@ describe("regression #5943: session_start transient UI", () => {
 		});
 
 		try {
-			const session = { setBeforeProviderRequest: () => {} };
 			const context: RebindContext = {
-				session,
-				cacheWarmController: { pause: async () => {}, rebind: async () => {}, resume: async () => {} },
 				applyRuntimeSettings: () => events.push("apply"),
-				bindCacheWarmSessionHooks: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
 					events.push("bind");
@@ -350,12 +327,8 @@ describe("regression #5943: session_start transient UI", () => {
 		});
 
 		try {
-			const session = { setBeforeProviderRequest: () => {} };
 			const context: RebindContext = {
-				session,
-				cacheWarmController: { pause: async () => {}, rebind: async () => {}, resume: async () => {} },
 				applyRuntimeSettings: () => {},
-				bindCacheWarmSessionHooks: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
 					events.push("bind");
@@ -406,18 +379,8 @@ describe("regression #5943: session_start transient UI", () => {
 		harness.setResponses([fauxAssistantMessage("assistant from start")]);
 
 		try {
-			const session = { setBeforeProviderRequest: () => {} };
 			const context: RebindContext = {
-				session,
-				cacheWarmController: {
-					pause: async () => {},
-					rebind: async () => {
-						events.push("cache-rebind");
-					},
-					resume: async () => {},
-				},
 				applyRuntimeSettings: () => {},
-				bindCacheWarmSessionHooks: () => events.push("cache-hooks"),
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
 					events.push("bind");
@@ -443,7 +406,7 @@ describe("regression #5943: session_start transient UI", () => {
 			await interactiveModePrototype.rebindCurrentSession.call(context, { renderBeforeBind: true });
 			await harness.session.agent.waitForIdle();
 
-			expect(events.slice(0, 5)).toEqual(["render", "subscribe", "cache-rebind", "cache-hooks", "bind"]);
+			expect(events.slice(0, 3)).toEqual(["render", "subscribe", "bind"]);
 			expect(events).toContain("message_start:user:user from start");
 			expect(events).toContain("message_end:user:user from start");
 			expect(events).toContain("message_end:assistant:assistant from start");

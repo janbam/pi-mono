@@ -378,6 +378,8 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 				`  if (url === ${JSON.stringify(OPENCODE_GO_PRICING_URL)}) return new Response(pricingPage, { status: 200 });\n` +
 				`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
+				// Strict generation requires the Radius catalog to return at least one model.
+				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
 				`  throw new Error(\`Unexpected fetch: \${url}\`);\n` +
 				`};\n`,
 		);
@@ -433,6 +435,7 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
 				`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
+				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
 				`  if (url === ${JSON.stringify(OPENCODE_GO_PRICING_URL)}) throw new Error("docs page unreachable");\n` +
 				`  throw new Error(\`Unexpected fetch: \${url}\`);\n` +
 				`};\n`,

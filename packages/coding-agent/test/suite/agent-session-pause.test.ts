@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
@@ -219,7 +219,7 @@ describe("AgentSession pause at turn boundary", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
-	it("freezes a retryable error at a landed pause until resumed", async () => {
+	it("retries a transient error hit after resuming from a pause", async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);
 		harness.setResponses([
@@ -232,18 +232,98 @@ describe("AgentSession pause at turn boundary", () => {
 		await harness.session.prompt("start");
 		disarm();
 
-		// The pause armed during the batch, so the errored round itself still ran;
-		// the hold lands after it and freezes the retry (third request) instead.
+		// The hold lands after the tool batch, so the erroring request has not been made yet.
 		expect(harness.session.isPaused).toBe(true);
 		expect(harness.getPendingResponseCount()).toBe(2);
 		expect(harness.eventsOfType("auto_retry_start")).toHaveLength(0);
 
-		// Resume settles the frozen retry through the normal post-run pipeline.
+		// The resumed run hits the transient error and recovers through normal auto-retry.
 		await harness.session.resumePaused();
 
 		expect(harness.getPendingResponseCount()).toBe(0);
 		expect(getAssistantTexts(harness)).toContain("recovered");
 		expect(harness.eventsOfType("auto_retry_start").length).toBeGreaterThan(0);
+	});
+
+	it("keeps the run's extension system prompt across pause and resume", async () => {
+		const harness = await createHarness({
+			tools: [echoTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => ({
+						systemPrompt: `${event.systemPrompt}\n\nEXTRA-RUN-INSTRUCTIONS`,
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		const sawExtraInstructions: boolean[] = [];
+		harness.setResponses([
+			(context) => {
+				sawExtraInstructions.push(getCurrentSystemPrompt(context.messages).includes("EXTRA-RUN-INSTRUCTIONS"));
+				return fauxAssistantMessage(fauxToolCall("echo", { text: "hello" }), { stopReason: "toolUse" });
+			},
+			(context) => {
+				sawExtraInstructions.push(getCurrentSystemPrompt(context.messages).includes("EXTRA-RUN-INSTRUCTIONS"));
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+		expect(harness.session.isPaused).toBe(true);
+
+		// The resumed request belongs to the same run, so it must carry the run's replaced prompt.
+		await harness.session.resumePaused();
+
+		expect(sawExtraInstructions).toEqual([true, true]);
+	});
+
+	it("lets a fully terminating tool batch end the run instead of holding it", async () => {
+		const finishTool: AgentTool = {
+			name: "finish",
+			label: "Finish",
+			description: "End the run",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: "finished" }], details: {}, terminate: true }),
+		};
+		const harness = await createHarness({ tools: [finishTool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("finish", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("must not be requested"),
+		]);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+
+		// Holding here would let resume issue the request the terminating tool declined.
+		expect(harness.session.isPaused).toBe(false);
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("lets an extension-triggered turn supersede a held pause", async () => {
+		const harness = await createHarness({ tools: [echoTool] });
+		harnesses.push(harness);
+		scriptToolTurnThenDone(harness);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+		expect(harness.session.isPaused).toBe(true);
+
+		// A triggered custom message continues the conversation like a new prompt.
+		await harness.session.sendCustomMessage(
+			{ customType: "ext", content: "extension nudge", display: false },
+			{ triggerTurn: true },
+		);
+
+		// The run must not stay "paused": resume would otherwise issue a duplicate continuation.
+		expect(harness.session.isPaused).toBe(false);
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(getAssistantTexts(harness)).toContain("done");
 	});
 
 	it("marks the transcript aborted when a held pause is discarded", async () => {
