@@ -2251,10 +2251,15 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
+			// A triggered turn continues the conversation like a new prompt, so it supersedes a held pause.
 			if (this._isEmittingAgentSettled) {
-				this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
+				this._deferredSettledActions.push(async () => {
+					this._discardHeldPause();
+					await this._runAgentPrompt(appMessage);
+				});
 				return;
 			}
+			this._discardHeldPause();
 			await this._runAgentPrompt(appMessage);
 		} else if (this.isStreaming) {
 			// Appending now would put the message between an assistant tool call and its

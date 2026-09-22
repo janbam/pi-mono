@@ -304,6 +304,28 @@ describe("AgentSession pause at turn boundary", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
+	it("lets an extension-triggered turn supersede a held pause", async () => {
+		const harness = await createHarness({ tools: [echoTool] });
+		harnesses.push(harness);
+		scriptToolTurnThenDone(harness);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+		expect(harness.session.isPaused).toBe(true);
+
+		// A triggered custom message continues the conversation like a new prompt.
+		await harness.session.sendCustomMessage(
+			{ customType: "ext", content: "extension nudge", display: false },
+			{ triggerTurn: true },
+		);
+
+		// The run must not stay "paused": resume would otherwise issue a duplicate continuation.
+		expect(harness.session.isPaused).toBe(false);
+		expect(harness.getPendingResponseCount()).toBe(0);
+		expect(getAssistantTexts(harness)).toContain("done");
+	});
+
 	it("marks the transcript aborted when a held pause is discarded", async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);

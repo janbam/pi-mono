@@ -3733,7 +3733,11 @@ export class InteractiveMode {
 
 			case "agent_settled":
 				this.showTurnUsage();
-				await this.handlePauseSettled();
+				// Flush after the settle dispatch: prompt() issued inside agent_settled is deferred and
+				// resolves before its run, so only outside that window can each send be awaited and caught.
+				setImmediate(() => {
+					if (!this.isShuttingDown) void this.handlePauseSettled();
+				});
 				await this.checkShutdownRequested();
 				break;
 
@@ -4779,17 +4783,26 @@ export class InteractiveMode {
 	 * continuation prompts, or surface the paused state when nothing was parked.
 	 */
 	private async handlePauseSettled(): Promise<void> {
-		// Flush one parked message per settle. prompt() issued during agent_settled is deferred and
-		// returns before its run starts, so the flushed run's own settle sends the next message;
-		// sending several here would race each other or a deferred extension run.
-		const next = this.pausePendingMessages.shift();
-		if (next !== undefined) {
-			try {
-				await this.session.prompt(next);
-			} catch (error) {
-				// Re-park instead of dropping: the editor was already cleared, so this is the only copy.
-				this.pausePendingMessages.unshift(next);
-				this.showError(`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`);
+		const parked = this.pausePendingMessages;
+		this.pausePendingMessages = [];
+		if (parked.length > 0) {
+			// Send serially; each prompt() here awaits its whole run, so messages keep their order.
+			for (let i = 0; i < parked.length; i++) {
+				if (!this.session.isIdle) {
+					// Another run (e.g. a deferred extension turn) owns the session; its settle flushes the rest.
+					this.pausePendingMessages.unshift(...parked.slice(i));
+					break;
+				}
+				try {
+					await this.session.prompt(parked[i]);
+				} catch (error) {
+					// Re-park the failed and untried messages: the editor was cleared, so this is their only copy.
+					this.pausePendingMessages.unshift(...parked.slice(i));
+					this.showError(
+						`Failed to send queued message: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					break;
+				}
 			}
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
