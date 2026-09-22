@@ -55,6 +55,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	services: AgentSessionServices;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
+	/** JBMOD: process-wide cache-warming override holder; see `CreateAgentSessionOptions`. */
+	cacheWarmingOverride?: CreateAgentSessionOptions["cacheWarmingOverride"];
 	model?: Model<any>;
 	thinkingLevel?: ThinkingLevel;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
@@ -217,5 +219,6 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
+		cacheWarmingOverride: options.cacheWarmingOverride,
 	});
 }

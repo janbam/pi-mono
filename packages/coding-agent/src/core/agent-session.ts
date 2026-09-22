@@ -64,7 +64,12 @@ import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { generateBugReportSummary } from "./bug-report.ts";
-import type { CacheWarmer, CacheWarmingStatus } from "./cache-warmer.ts";
+import type {
+	CacheWarmer,
+	CacheWarmingEffectiveMode,
+	CacheWarmingOverride,
+	CacheWarmingStatus,
+} from "./cache-warmer.ts";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -216,7 +221,9 @@ export interface AgentSessionConfig {
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
 	/** Keeps the prompt cache entry of the last session request warm. */
-	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed" | "restore">;
+	/** JBMOD: process-wide cache-warming override holder, shared with the warmer's policy. */
+	cacheWarmingOverride?: CacheWarmingOverride;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -393,7 +400,11 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
-	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	private _cacheWarmer?: Pick<
+		CacheWarmer,
+		"cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed" | "restore"
+	>;
+	private _cacheWarmingOverride: CacheWarmingOverride;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -415,6 +426,7 @@ export class AgentSession {
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
 		this._cacheWarmer = config.cacheWarmer;
+		this._cacheWarmingOverride = config.cacheWarmingOverride ?? {};
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
 		}
@@ -1332,7 +1344,33 @@ export class AgentSession {
 	/** Persist the cache-warming mode and immediately reconcile active warming. */
 	setCacheWarmingMode(mode: CacheWarmingMode): void {
 		this.settingsManager.setCacheWarmingMode(mode);
+		this._reconcileCacheWarming();
+	}
+
+	/** JBMOD: process-only override from `-kw` or `/warm`; undefined follows the setting. */
+	get cacheWarmingOverride(): CacheWarmingOverride["mode"] {
+		return this._cacheWarmingOverride.mode;
+	}
+
+	/** JBMOD: warming mode in effect after the process override. */
+	get cacheWarmingMode(): CacheWarmingEffectiveMode {
+		return this._cacheWarmingOverride.mode ?? this.settingsManager.getCacheWarmingMode();
+	}
+
+	/** JBMOD: set the process-only override (never persisted; survives session replacement). */
+	setCacheWarmingOverride(mode: CacheWarmingOverride["mode"]): void {
+		this._cacheWarmingOverride.mode = mode;
+		this._reconcileCacheWarming();
+	}
+
+	/**
+	 * Apply a warming mode change: stop what the new mode forbids and, while idle, pick up the
+	 * transcript's last request when the new mode warms between runs.
+	 */
+	private _reconcileCacheWarming(): void {
 		this._cacheWarmer?.onModeChanged();
+		// A running agent restarts warming with its next request; restoring now would race it.
+		if (!this.isStreaming) void this._cacheWarmer?.restore();
 	}
 
 	/** Current model (may be undefined if not yet selected) */
@@ -3335,6 +3373,9 @@ export class AgentSession {
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+		// JBMOD: a resumed transcript may still own a live cache entry; the rebuild needs the bound
+		// extensions' context hooks, so it runs only now.
+		if (!this.isStreaming) void this._cacheWarmer?.restore();
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {

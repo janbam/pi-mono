@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
+import { type ModelsSimpleStreamOptions, normalizeContext } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import { CacheWarmer } from "./cache-warmer.ts";
+import { CacheWarmer, type CacheWarmingOverride, type RebuiltCacheWarmRequest } from "./cache-warmer.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
@@ -87,6 +87,11 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * JBMOD: process-only cache-warming override (`-kw`, `/warm`). Pass the same holder to every
+	 * session of a process so the override survives session replacement. Default: a private holder.
+	 */
+	cacheWarmingOverride?: CacheWarmingOverride;
 }
 
 /** Result from createAgentSession */
@@ -302,11 +307,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	const cacheWarmingOverride = options.cacheWarmingOverride ?? {};
 	const cacheWarmer = new CacheWarmer(
 		modelRuntime,
 		sessionManager,
-		() => settingsManager.getCacheWarmingMode(),
+		// JBMOD: the process override wins over the persisted mode; the age cap is read live.
+		() => ({
+			mode: cacheWarmingOverride.mode ?? settingsManager.getCacheWarmingMode(),
+			maxAgeMs: settingsManager.getCacheWarmingMaxAgeMinutes() * 60_000,
+		}),
 		async (event) => extensionRunnerRef.current?.emitCacheWarmingDecision(event) ?? event.action,
+		() => rebuildLastRequest(),
 	);
 	const buildRequestOptions = (
 		requestModel: Model<any>,
@@ -346,6 +357,38 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				messages.length <= currentMessages.length &&
 				messages.every((message, index) => currentMessages[index] === message)
 			);
+		};
+	};
+	/**
+	 * JBMOD: rebuild the transcript's last real request the way the agent loop sends it: the
+	 * canonical projection before the last assistant message, through the `context` hooks and
+	 * LLM conversion, with the agent's request options. Undefined when there is no such request.
+	 * Per-run state such as a `before_agent_start` system prompt is gone; the warmer's cache-read
+	 * check stops warming if that makes the rebuilt request diverge.
+	 */
+	const rebuildLastRequest = async (): Promise<RebuiltCacheWarmRequest | undefined> => {
+		const messages = sessionManager.buildSessionProjection().messages;
+		let lastAssistantIndex = messages.length - 1;
+		while (lastAssistantIndex >= 0 && messages[lastAssistantIndex].role !== "assistant") lastAssistantIndex--;
+		if (lastAssistantIndex < 0) return undefined;
+		const requestMessages = messages.slice(0, lastAssistantIndex);
+		const transformed = agent.transformContext ? await agent.transformContext(requestMessages) : requestMessages;
+		const context = normalizeContext({ messages: await agent.convertToLlm(transformed) });
+		const requestModel = agent.state.model;
+		const thinkingLevel = agent.state.thinkingLevel;
+		// Same request-shaping fields the agent loop passes to streamFn.
+		const requestOptions = buildRequestOptions(requestModel, {
+			reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
+			sessionId: agent.sessionId,
+			onPayload: agent.onPayload,
+			onResponse: agent.onResponse,
+			transport: agent.transport,
+			thinkingBudgets: agent.thinkingBudgets,
+			maxRetryDelayMs: agent.maxRetryDelayMs,
+		});
+		return {
+			request: { model: requestModel, context, options: requestOptions },
+			isCurrent: cacheContextIsCurrent(requestModel),
 		};
 	};
 	const transformProviderPayload = async (payload: unknown) => {
@@ -422,6 +465,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		customTools: options.customTools,
 		modelRuntime,
 		cacheWarmer,
+		cacheWarmingOverride,
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,

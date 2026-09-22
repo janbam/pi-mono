@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+	BetaMessage,
 	BetaStopReason,
 	BetaThinkingDroppedInputTransformation,
 	BetaTool,
+	BetaUsage,
 	BetaCacheControlEphemeral as CacheControlEphemeral,
 	BetaContentBlockParam as ContentBlockParam,
 	MessageCreateParamsStreaming,
@@ -574,6 +576,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
+			// JBMOD: max_tokens 0 is Anthropic's cache pre-warm (prompt is read and cached, nothing is
+			// generated). The API only accepts it as a non-streaming request.
+			const prewarm = options?.maxTokens === 0;
 			let params = buildParams(model, normalizedContext, isOAuth, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -585,7 +590,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				maxRetries: 0,
 			};
 			const response = await retryProviderRequest(
-				() => client.beta.messages.create(params, requestOptions).asResponse(),
+				() =>
+					prewarm
+						? client.beta.messages.create({ ...params, stream: false }, requestOptions).asResponse()
+						: client.beta.messages.create(params, requestOptions).asResponse(),
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -594,6 +602,25 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
+
+			if (prewarm) {
+				// A pre-warm answers with one JSON message: empty content, stop_reason max_tokens, full usage.
+				const message = (await response.json()) as BetaMessage;
+				output.responseId = message.id;
+				setUsageFromMessage(output.usage, message.usage);
+				calculateCost(model, output.usage);
+				if (!message.stop_reason) throw new Error("Anthropic cache pre-warm ended without a stop reason");
+				output.rawStopReason = message.stop_reason;
+				const stopReasonResult = mapStopReason(message.stop_reason, message.stop_details);
+				const reason = stopReasonResult.stopReason;
+				output.stopReason = reason;
+				if (reason === "error" || reason === "aborted" || reason === "pending") {
+					throw new Error(stopReasonResult.errorMessage || "Anthropic cache pre-warm failed");
+				}
+				stream.push({ type: "done", reason, message: output });
+				stream.end();
+				return;
+			}
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
@@ -614,14 +641,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					usageModel = fallbackCost ? { ...model, id: responseModel, cost: fallbackCost } : model;
 					// Capture initial token usage from message_start event
 					// This ensures we have input token counts even if the stream is aborted early
-					output.usage.input = event.message.usage.input_tokens || 0;
-					output.usage.output = event.message.usage.output_tokens || 0;
-					output.usage.cacheRead = event.message.usage.cache_read_input_tokens || 0;
-					output.usage.cacheWrite = event.message.usage.cache_creation_input_tokens || 0;
-					output.usage.cacheWrite1h = event.message.usage.cache_creation?.ephemeral_1h_input_tokens || 0;
-					// Anthropic doesn't provide total_tokens, compute from components
-					output.usage.totalTokens =
-						output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
+					setUsageFromMessage(output.usage, event.message.usage);
 					calculateCost(usageModel, output.usage);
 				} else if (event.type === "content_block_start") {
 					if (event.content_block.type === "fallback") {
@@ -1196,8 +1216,10 @@ function buildParams(
 		}
 	}
 
+	// JBMOD: a pre-warm (max_tokens 0) targets the primary model's cache only; a fallback would
+	// write a cache entry the next request never reads.
 	const allowedFallbackModels = model.compat?.allowedFallbackModels;
-	if (allowedFallbackModels && allowedFallbackModels.length > 0) {
+	if (allowedFallbackModels && allowedFallbackModels.length > 0 && options?.maxTokens !== 0) {
 		params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
 	}
 
@@ -1489,6 +1511,17 @@ function convertTools(
 			...(cacheControl && index === tools.length - 1 ? { cache_control: cacheControl } : {}),
 		};
 	});
+}
+
+/** Copy a complete Anthropic usage block (message_start or a non-streaming response) into pi usage. */
+function setUsageFromMessage(usage: AssistantMessage["usage"], source: BetaUsage): void {
+	usage.input = source.input_tokens || 0;
+	usage.output = source.output_tokens || 0;
+	usage.cacheRead = source.cache_read_input_tokens || 0;
+	usage.cacheWrite = source.cache_creation_input_tokens || 0;
+	usage.cacheWrite1h = source.cache_creation?.ephemeral_1h_input_tokens || 0;
+	// Anthropic doesn't provide total_tokens, compute from components
+	usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 
 function mapStopReason(

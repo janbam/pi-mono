@@ -45,6 +45,8 @@ export interface Args {
 	useTheme?: string;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
+	/** JBMOD: warm the prompt cache while running and idle for this process only (`-kw`). */
+	keepCacheWarm?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
 	logApiRequests?: string;
@@ -194,6 +196,8 @@ export function parseArgs(args: string[]): Args {
 			result.noThemes = true;
 		} else if (arg === "--no-context-files" || arg === "-nc") {
 			result.noContextFiles = true;
+		} else if (arg === "--keep-cache-warm" || arg === "-kw") {
+			result.keepCacheWarm = true;
 		} else if (arg === "--list-models") {
 			// Check if next arg is a search pattern (not a flag or file arg)
 			if (i + 1 < args.length && !args[i + 1].startsWith("-") && !args[i + 1].startsWith("@")) {
@@ -319,6 +323,8 @@ ${chalk.bold("Options:")}
   --use-theme <name[/name]>      Set the initial interactive theme for this run
   --no-themes                    Disable theme discovery and loading
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
+  --keep-cache-warm, -kw         Keep the prompt cache warm while running and idle, for this process
+                                 only (overrides the cacheWarming setting; see /warm)
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)

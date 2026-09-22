@@ -187,6 +187,7 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session info (file, ID, messages, tokens, cost) |
+| `/warm [on\|off]` | Show or set prompt cache warming for this process |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/trust` | Save project trust decision for future sessions (restart required) |
 | `/fork` | Create a new session from a previous user message |
@@ -656,6 +657,7 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 | `--tui-mode <mode>` | TUI mode: `regular` (default) or experimental `fullscreen` |
 | `--use-theme <name[/name]>` | Set the initial interactive theme for this run without changing settings |
 | `--verbose` | Force verbose startup |
+| `-kw`, `--keep-cache-warm` | Keep the prompt cache warm while running and idle, for this process only ([Cache Warming](docs/settings.md#cache-warming)) |
 | `-a`, `--approve` | Trust project-local files for this run |
 | `-na`, `--no-approve` | Ignore project-local files for this run |
 | `--` | Stop option parsing; remaining arguments are prompts or `@file` inputs |

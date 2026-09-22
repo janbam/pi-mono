@@ -64,6 +64,8 @@ export interface SettingsConfig {
 	transport: Transport;
 	httpIdleTimeoutMs: number;
 	cacheWarmingMode: CacheWarmingMode;
+	/** JBMOD: minutes after the last real request when warming stops. */
+	cacheWarmingMaxAgeMinutes: number;
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
 	modelThinkingLevels: Record<string, ThinkingLevel>;
@@ -105,6 +107,7 @@ export interface SettingsCallbacks {
 	onTransportChange: (transport: Transport) => void;
 	onHttpIdleTimeoutMsChange: (timeoutMs: number) => void;
 	onCacheWarmingModeChange: (mode: CacheWarmingMode) => void;
+	onCacheWarmingMaxAgeMinutesChange: (minutes: number) => void;
 	onModelThinkingLevelChange: (provider: string, modelId: string, level: ThinkingLevel) => void;
 	onModelThinkingLevelRemove: (provider: string, modelId: string) => void;
 	onThemeChange: (theme: string) => void;
@@ -552,9 +555,23 @@ export class SettingsSelectorComponent extends Container {
 				id: "cache-warming-mode",
 				label: "Cache warming",
 				description:
-					"off; streaming while the agent runs; idle also between runs while continuation stays profitable",
+					"off; streaming while the agent runs; idle also between runs while continuation stays profitable. -kw and /warm override it for one process",
 				currentValue: config.cacheWarmingMode,
 				values: [...CACHE_WARMING_MODES],
+			},
+			{
+				id: "cache-warming-max-age",
+				label: "Cache warming limit (minutes)",
+				description: "Stop warming this many minutes after the last real request, while running or idle",
+				currentValue: String(config.cacheWarmingMaxAgeMinutes),
+				submenu: (currentValue, done) =>
+					new NumberInputSubmenu(
+						"Cache Warming Limit",
+						"Enter the minutes after the last real request when warming stops (at least 1).",
+						currentValue,
+						(value) => done(String(value)),
+						() => done(),
+					),
 			},
 			{
 				id: "hide-thinking",
@@ -940,6 +957,9 @@ export class SettingsSelectorComponent extends Container {
 					}
 					case "cache-warming-mode":
 						callbacks.onCacheWarmingModeChange(newValue as CacheWarmingMode);
+						break;
+					case "cache-warming-max-age":
+						callbacks.onCacheWarmingMaxAgeMinutesChange(Number.parseInt(newValue, 10));
 						break;
 					case "hide-thinking":
 						callbacks.onHideThinkingBlockChange(newValue === "true");
