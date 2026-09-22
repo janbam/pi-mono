@@ -57,7 +57,7 @@ A refresh is sent only when the expected avoided cache-miss cost, minus the cost
 
 Warming stops when the context changes (model switch, compaction, branch navigation), when `cacheWarmingMaxAgeMinutes` have passed since the last real provider request, when a refresh fails, or when a refresh reads nothing from the cache (the entry expired or the replay no longer matches it). Extensions can override each decision through the [`cache_warming_decision`](extensions.md#cache_warming_decision) event; they can stop explicit warming too.
 
-Resuming a session (`--continue`, `/resume`) or enabling idle warming while idle picks up the transcript's last request when its cache entry is still alive. Pi rebuilds that request through the normal request pipeline, including extension `context` handlers, and derives the entry's remaining lifetime from the last response and later refreshes. If the rebuild differs from what was sent, the first refresh misses the cache and warming stops.
+Resuming a session (`--continue`, `/resume`) or enabling idle warming picks up the transcript's last request when its cache entry is still alive. Pi rebuilds that request through the normal request pipeline, including extension `context` handlers, and derives the entry's remaining lifetime from the last response and later refreshes. If the rebuild differs from what was sent, the first refresh misses the cache and warming stops.
 
 Each refresh is billed as a cache read of the full context plus at most one output token. Usage and cost show up in session totals but never enter model context.
 

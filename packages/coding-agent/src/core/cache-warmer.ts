@@ -405,12 +405,20 @@ export class CacheWarmer {
 	/** Reconcile an active run after the effective warming mode changes. */
 	onModeChanged(): void {
 		const run = this.run;
-		if (!run) return;
+		if (!run) {
+			// JBMOD: a stale "disabled" reason would contradict a mode that now warms.
+			if (this.getPolicy().mode !== "off" && this.inactive.reason === "cache warming disabled") {
+				this.inactive = { state: "inactive", reason: "waiting for first request" };
+			}
+			return;
+		}
 		const reason = this.getModeStopReason(run);
 		if (reason) this.stop(reason);
 	}
 
 	cancel(): void {
+		// JBMOD: also invalidate an in-flight restore, so a disposed session never resumes warming.
+		this.generation++;
 		this.stop("inactive");
 	}
 
@@ -480,19 +488,32 @@ export class CacheWarmer {
 			this.stop("prompt cache already expired");
 			return;
 		}
-		const { maxAgeMs } = this.getPolicy();
-		if (run.nextWarmAt > run.startedAt + maxAgeMs) {
-			this.stop(`${Math.round(maxAgeMs / 60_000)}-minute warming limit reached`);
+		const capReason = this.getAgeCapStopReason(run);
+		if (capReason) {
+			this.stop(capReason);
 			return;
 		}
 		run.timer = setTimeout(() => void this.refresh(run), Math.max(0, run.nextWarmAt - Date.now()));
 		run.timer.unref?.();
 	}
 
+	/** JBMOD: stop reason once the next refresh would fall past the age cap, read live from settings. */
+	private getAgeCapStopReason(run: ActiveRun): string | undefined {
+		const { maxAgeMs } = this.getPolicy();
+		if (run.nextWarmAt <= run.startedAt + maxAgeMs) return undefined;
+		return `${Math.round(maxAgeMs / 60_000)}-minute warming limit reached`;
+	}
+
 	private async refresh(run: ActiveRun): Promise<void> {
 		run.timer = undefined;
 		if (!this.validateRun(run)) return;
 		if (this.refreshDeadlineMissed(run)) return;
+		// The cap may have been lowered since this refresh was armed.
+		const capReason = this.getAgeCapStopReason(run);
+		if (capReason) {
+			this.stop(capReason);
+			return;
+		}
 		const decision = this.evaluate(run);
 		const { warmCost, missCost, continuationProbability } = decision;
 		let action = decision.action;

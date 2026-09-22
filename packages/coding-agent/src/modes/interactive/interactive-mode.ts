@@ -3326,7 +3326,7 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/warm" || text.startsWith("/warm ")) {
-				this.handleWarmCommand(text);
+				await this.handleWarmCommand(text);
 				this.editor.setText("");
 				return;
 			}
@@ -6767,10 +6767,11 @@ export class InteractiveMode {
 	 * JBMOD: `/warm [on|off]` sets the process-only warming override (never persisted); bare `/warm`
 	 * reports the current state. "on" warms while running and idle without the savings floor.
 	 */
-	private handleWarmCommand(text: string): void {
+	private async handleWarmCommand(text: string): Promise<void> {
 		const argument = text.slice("/warm".length).trim().toLowerCase();
 		if (argument === "on" || argument === "off") {
-			this.session.setCacheWarmingOverride(argument);
+			// Wait for a transcript restore so the reported state is the one warming actually reached.
+			await this.session.setCacheWarmingOverride(argument);
 		} else if (argument) {
 			this.showWarning("Usage: /warm [on|off]");
 			return;

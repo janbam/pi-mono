@@ -405,6 +405,8 @@ export class AgentSession {
 		"cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed" | "restore"
 	>;
 	private _cacheWarmingOverride: CacheWarmingOverride;
+	/** JBMOD: a warming mode change arrived mid-run; restore from the transcript once it settles. */
+	private _restoreCacheWarmingOnSettle = false;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -878,6 +880,12 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		this._cacheWarmer?.onAgentSettled();
+		// A mode change during the run asked for warming; restore() is a no-op if the run's own
+		// requests already started it. Only on request, so a deliberate failed stop stays stopped.
+		if (this._restoreCacheWarmingOnSettle) {
+			this._restoreCacheWarmingOnSettle = false;
+			void this._cacheWarmer?.restore();
+		}
 		this._isAgentRunActive = false;
 		this._isEmittingAgentSettled = true;
 		try {
@@ -1344,7 +1352,7 @@ export class AgentSession {
 	/** Persist the cache-warming mode and immediately reconcile active warming. */
 	setCacheWarmingMode(mode: CacheWarmingMode): void {
 		this.settingsManager.setCacheWarmingMode(mode);
-		this._reconcileCacheWarming();
+		void this._reconcileCacheWarming();
 	}
 
 	/** JBMOD: process-only override from `-kw` or `/warm`; undefined follows the setting. */
@@ -1357,20 +1365,28 @@ export class AgentSession {
 		return this._cacheWarmingOverride.mode ?? this.settingsManager.getCacheWarmingMode();
 	}
 
-	/** JBMOD: set the process-only override (never persisted; survives session replacement). */
-	setCacheWarmingOverride(mode: CacheWarmingOverride["mode"]): void {
+	/**
+	 * JBMOD: set the process-only override (never persisted; survives session replacement).
+	 * Resolves once warming picked up the transcript's last request, when that applies.
+	 */
+	setCacheWarmingOverride(mode: CacheWarmingOverride["mode"]): Promise<void> {
 		this._cacheWarmingOverride.mode = mode;
-		this._reconcileCacheWarming();
+		return this._reconcileCacheWarming();
 	}
 
 	/**
-	 * Apply a warming mode change: stop what the new mode forbids and, while idle, pick up the
-	 * transcript's last request when the new mode warms between runs.
+	 * Apply a warming mode change: stop what the new mode forbids and pick up the transcript's
+	 * last request when the new mode warms between runs.
 	 */
-	private _reconcileCacheWarming(): void {
+	private async _reconcileCacheWarming(): Promise<void> {
 		this._cacheWarmer?.onModeChanged();
-		// A running agent restarts warming with its next request; restoring now would race it.
-		if (!this.isStreaming) void this._cacheWarmer?.restore();
+		// Restoring mid-run would race the run's next request. That request may never come (final
+		// text turn), so defer the restore to settlement instead of dropping it.
+		if (this.isStreaming) {
+			this._restoreCacheWarmingOnSettle = true;
+			return;
+		}
+		await this._cacheWarmer?.restore();
 	}
 
 	/** Current model (may be undefined if not yet selected) */

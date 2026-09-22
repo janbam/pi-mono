@@ -129,6 +129,7 @@ describe("createAgentSession stream options", () => {
 	async function createCacheWarmingSession(
 		sessionManager = SessionManager.inMemory(cwd),
 		settings: Partial<Settings> = { cacheWarming: "idle" },
+		onProviderCall?: () => void,
 	) {
 		const model: Model<Api> = {
 			...createModel("anthropic-messages"),
@@ -143,6 +144,7 @@ describe("createAgentSession stream options", () => {
 			api: model.api,
 			streamSimple: () => {
 				providerCalls++;
+				onProviderCall?.();
 				return createDoneStream(model.api, 100_000);
 			},
 		});
@@ -222,13 +224,27 @@ describe("createAgentSession stream options", () => {
 			await fixture.session.prompt("test");
 			expect(fixture.session.cacheWarmingStatus?.reason).toBe("cache warming disabled");
 
-			fixture.session.setCacheWarmingOverride("on");
-			await vi.waitFor(() => expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled"));
+			await fixture.session.setCacheWarmingOverride("on");
+			expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled");
 			expect(fixture.session.cacheWarmingMode).toBe("on");
 			expect(fixture.session.settingsManager.getCacheWarmingMode()).toBe("off");
 
-			fixture.session.setCacheWarmingOverride("off");
+			await fixture.session.setCacheWarmingOverride("off");
 			expect(fixture.session.cacheWarmingStatus?.reason).toBe("cache warming disabled");
+			expect(fixture.providerCalls()).toBe(1);
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	// Regression (review of PR #42): enabling during the final text turn has no later request to start warming.
+	it("starts warming at settlement when enabled during the run's last request", async () => {
+		let enableDuringRequest: (() => void) | undefined;
+		const fixture = await createCacheWarmingSession(undefined, {}, () => enableDuringRequest?.());
+		enableDuringRequest = () => void fixture.session.setCacheWarmingOverride("on");
+		try {
+			await fixture.session.prompt("test");
+			await vi.waitFor(() => expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled"));
 			expect(fixture.providerCalls()).toBe(1);
 		} finally {
 			fixture.dispose();

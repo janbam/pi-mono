@@ -362,6 +362,14 @@ describe("cache warming", () => {
 		await vi.advanceTimersByTimeAsync(20 * 60_000);
 		expect(calls).toHaveLength(2);
 		expect(warmer.status).toMatchObject({ state: "inactive", reason: "10-minute warming limit reached" });
+
+		// A cap lowered after a refresh was armed applies to that refresh too.
+		const lowered = fakeRuntime({ mode: "on" });
+		lowered.warmer.start(request(), current);
+		lowered.state.maxAgeMs = 60_000;
+		await vi.advanceTimersByTimeAsync(290_000);
+		expect(lowered.calls).toHaveLength(0);
+		expect(lowered.warmer.status.reason).toBe("1-minute warming limit reached");
 	});
 
 	// JBMOD: a refresh without a cache read means the entry was lost or the replay diverged.
@@ -532,7 +540,38 @@ describe("cache warming", () => {
 		await restoring;
 
 		expect(warmer.status).toMatchObject({ state: "scheduled", warmSince: 400_000, refreshCount: 0 });
+
+		// A real request that could not be warmed leaves no run behind, yet it still supersedes the restore.
 		warmer.cancel();
+		const restoringAgain = warmer.restore();
+		warmer.start(request(budgetModel, { reasoning: "high" }), current);
+		finishRebuild();
+		await restoringAgain;
+		expect(warmer.status).toMatchObject({ state: "inactive", reason: "request cannot be replayed safely" });
+	});
+
+	// Regression (review of PR #42): disposal during a slow rebuild must not revive warming.
+	it("does not resume warming after being cancelled during the rebuild", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(400_000);
+		let finishRebuild!: () => void;
+		const { warmer, calls } = fakeRuntime({
+			mode: "on",
+			branch: [assistantEntry(300_000)],
+			rebuild: () =>
+				new Promise((resolve) => {
+					finishRebuild = () => resolve({ request: request(), isCurrent: current });
+				}),
+		});
+
+		const restoring = warmer.restore();
+		warmer.cancel();
+		finishRebuild();
+		await restoring;
+
+		expect(warmer.status).toMatchObject({ state: "inactive", reason: "inactive" });
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("formats status and usage entries", () => {
