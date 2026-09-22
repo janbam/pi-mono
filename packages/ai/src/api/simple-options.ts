@@ -1,18 +1,18 @@
 import type {
 	Api,
-	Context,
 	Model,
 	SimpleStreamOptions,
 	StreamOptions,
 	ThinkingBudgets,
 	ThinkingLevel,
+	TranscriptContext,
 } from "../types.ts";
 import { estimateContextTokens } from "../utils/estimate.ts";
 
 const CONTEXT_SAFETY_TOKENS = 4096;
 const MIN_MAX_TOKENS = 1;
 
-export function clampMaxTokensToContext(model: Model<Api>, context: Context, maxTokens: number): number {
+export function clampMaxTokensToContext(model: Model<Api>, context: TranscriptContext, maxTokens: number): number {
 	if (model.contextWindow <= 0) return Math.max(MIN_MAX_TOKENS, maxTokens);
 	const available = model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;
 	return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, available));
@@ -20,7 +20,7 @@ export function clampMaxTokensToContext(model: Model<Api>, context: Context, max
 
 export function buildBaseOptions(
 	model: Model<Api>,
-	context: Context,
+	context: TranscriptContext,
 	options?: SimpleStreamOptions,
 	apiKey?: string,
 ): StreamOptions {
@@ -31,12 +31,7 @@ export function buildBaseOptions(
 	return {
 		temperature: options?.temperature,
 		samplingParams,
-		// Cache maintenance normally requests no completion; budget thinking reserves one answer token above its budget.
-		maxTokens: options?.promptCacheWarmup
-			? (options.maxTokens ?? 0)
-			: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
-		promptCacheWarmup: options?.promptCacheWarmup,
-		promptCacheWarmupExpiresAt: options?.promptCacheWarmupExpiresAt,
+		maxTokens: clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens),
 		signal: options?.signal,
 		telemetryContext: options?.telemetryContext,
 		apiKey: apiKey || options?.apiKey,

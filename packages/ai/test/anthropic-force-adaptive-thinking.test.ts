@@ -90,7 +90,8 @@ describe("Anthropic forceAdaptiveThinking compat override", () => {
 	});
 
 	it.each([
-		["kimi-for-coding", "medium", "medium"],
+		// JBMOD: the fork clamps requested levels against catalog metadata; kimi-for-coding lists no medium, so it maps to high.
+		["kimi-for-coding", "medium", "high"],
 		["k3", "max", "max"],
 		["kimi-for-coding-highspeed", "medium", "medium"],
 	] as const)(

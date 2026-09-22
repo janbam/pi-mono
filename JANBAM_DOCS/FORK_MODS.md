@@ -125,27 +125,50 @@ Implementation:
 - Tests: `packages/coding-agent/test/keybindings.test.ts`, `test/suite/agent-session-model-extension.test.ts`, `test/rpc-prompt-response-semantics.test.ts`, `test/rpc.test.ts`
 - Docs: `packages/coding-agent/docs/keybindings.md`, `docs/quickstart.md`, `docs/rpc.md`, `README.md`, `CHANGELOG.md`
 
-## Prompt-cache maintenance keeps Anthropic caches warm between turns
+## Prompt-cache warming uses upstream's `CacheWarmer`
 
-Upstream behavior: a cache lease can only be established or refreshed by a foreground turn; idle gaps let Anthropic's 5-minute / 1-hour cache entries expire.
+The fork's own warming scheduler (`cache-warmup.ts`, `promptCacheWarmup` adapter options, `pi.cache-warm` session markers) was removed in the v0.87.0 merge in favor of upstream's `CacheWarmer` (v0.86.0), which replays the exact last request captured at the `streamFn` boundary. Fork-specific warming behavior is rebuilt on top of it in a follow-up.
 
-Fork behavior: the ai package exposes `promptCacheWarmup` plus `promptCacheWarmupExpiresAt` on Anthropic Messages requests. The coding agent's cache-warming scheduler (`--keep-cache-warm` / `-kw`, `/warm`) sends non-streaming maintenance requests that hit the same cache prefix without producing visible output. `promptCacheWarmup` requests are zero-token (`max_tokens: 0`), except budget-thinking models which get the one-token answer allowance Anthropic requires; a scheduler-side lease deadline is enforced before dispatch and a missed deadline is encoded as `aborted`.
+Merge note: fork request options carry the unresolved Pi thinking level (`ModelsSimpleStreamOptions`, see model-aware requests above), so `CacheWarmer`'s helpers accept that type and `isReplayable` treats `reasoning: "off"` as no thinking: `packages/coding-agent/src/core/cache-warmer.ts`.
 
-The request must be cache-compatible with the real continuation, so three invariants hold:
+## Escape pauses the run at the next turn boundary
 
-- The conversation cache breakpoint sits on the prefix shared with the real continuation: before the synthetic final dot, or on the unresolved tool-use block whose tool result is still missing.
-- Payload hooks (`onPayload`) may change the body, but `max_tokens`, `thinking`, and `output_config` are restored from the pre-hook request and the stream flag is forced back to `false`; a hook can never turn a warmup into a streaming generation.
-- Server-side model fallbacks are skipped for warmups so a fallback model cannot absorb a cache refresh attributed to the requested model.
+Upstream behavior: Escape while streaming aborts the stream and running tools immediately.
+
+Fork behavior: `app.turn.pause` (default `escape`) arms a pause. The run finishes its current tool batch, persists the tool results, and holds before the next LLM request. Pressing Escape again before the hold lands cancels it. While held, the editor border is bright red; typing a message continues the run with that message, and `app.turn.resume` (default `escape`) continues without injecting anything. Messages typed while the pause drains are parked and sent after it lands. `app.interrupt` (defaults `ctrl+escape`, `ctrl+\`) keeps the old hard-abort behavior and discards a held pause with a persisted "Operation aborted" marker. A text-only final turn ends normally instead of holding, because a continuation cannot start from an assistant-last transcript.
 
 Implementation:
 
-- Warmup request shaping, breakpoint placement, hook invariants, and non-streaming response handling: `packages/ai/src/api/anthropic-messages.ts` (`capturePromptCacheWarmupInvariants`, `applyPromptCacheWarmupInvariants`, `applyConversationCacheControl`, `isPromptCacheWarmupExpired`)
-- Public options: `packages/ai/src/types.ts`
-- Scheduler, lease lifetime, marker replay, and maintenance accounting: `packages/coding-agent/src/core/cache-warmup.ts`
-- Foreground request provenance, provider-work draining, UI state, and pause integration: `packages/coding-agent/src/core/agent-session.ts`, `src/modes/interactive/interactive-mode.ts`
-- Tests: `packages/ai/test/anthropic-cache-warmup.test.ts`, `packages/ai/test/anthropic-sse-parsing.test.ts`, `packages/coding-agent/test/cache-warmup.test.ts`, `test/agent-session-cache-warmup.test.ts`, `test/interactive-mode-turn-usage.test.ts`
+- Pause state, `requestPause()`, `resumePaused()`, `abortPausedTurn()`: `packages/coding-agent/src/core/agent-session.ts`. The hold is a `finishTurn` hook returning `{ action: "end" }`, installed after upstream's boundary hooks so extension `turn_end` drafts still persist. A held run skips post-run recovery and `agent_before_settle`; resume runs the staged post-run pass, one `continue()`, then the shared settle loop (`_settleAgentRun`).
+- Keybindings: `packages/coding-agent/src/core/keybindings.ts`; `ctrl+escape` key matching: `packages/tui/src/keys.ts`
+- Interactive dispatch, parked messages, red border: `packages/coding-agent/src/modes/interactive/interactive-mode.ts`
+- Tests: `packages/coding-agent/test/suite/agent-session-pause.test.ts`
 
-Merge note: upstream moved the Anthropic adapter to the beta Messages API (`client.beta.messages.create`). Warmups must dispatch through the same beta client and read the non-streaming `BetaMessage` body for usage and stop reason; fork tests inject fake clients under `beta.messages.create`. Anthropic may resolve a requested model alias to a concrete serving model, so `AssistantMessage.model` remains the request identity while `responseModel` records the serving model; otherwise the foreground cache proof would be rejected as belonging to a different request.
+Merge note: v0.87.0 removed `shouldStopAfterTurn`, which the pause originally used; it now chains on `finishTurn`.
+
+## Fork system prompt
+
+Upstream behavior: the default prompt starts with the pi-harness introduction, includes a pi documentation routing section, and says "Be concise in your responses". An empty `--system-prompt ""` falls back to the default prompt.
+
+Fork behavior: the preamble is "You are the top senior software engineer and system architecture designer.", the conciseness rule is stricter (high-signal, no preambles or hedging, ask about ambiguities), and the pi documentation section is omitted. An explicit empty custom prompt is a valid empty base prompt; only `undefined` selects the default. `--append-system-prompt ""` likewise disables appended prompts, replacing `APPEND_SYSTEM.md` discovery.
+
+Implementation: `packages/coding-agent/src/core/system-prompt.ts` (`buildSystemPromptSections`, `buildRules`), `src/core/resource-loader.ts`, `src/cli/args.ts`.
+
+Tests adjusted for the fork prompt: `packages/coding-agent/test/system-prompt.test.ts`, `test/system-prompt-updates.test.ts`, `test/suite/agent-session-boundaries.test.ts` (replacement text sized to cross the compaction threshold without the docs section), and `packages/evals/test/harness.test.ts` (docs-stripping variant tests skipped because the section does not exist).
+
+## Direct registered-tool execution
+
+Fork behavior: `AgentSession.executeTool()` for SDK hosts, `pi.executeTool()` for extensions, and RPC commands `get_all_tools` / `execute_tool` run a registered tool by name without starting an agent turn or appending a tool-result message. Argument preparation, schema validation, `tool_call` blocking, `tool_result` mutation, and lifecycle events behave as for model-requested calls.
+
+Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/extensions/types.ts`, `src/modes/rpc/`. Tests: `test/suite/agent-session-execute-tool.test.ts`, `test/rpc-direct-tool-execution.test.ts`.
+
+## Smaller fork additions
+
+- `--log-api-requests <file>` writes every outgoing provider request (URL, method, redacted headers, body, status, duration) as JSONL. Amazon Bedrock's node:http transport is not covered. `packages/coding-agent/src/core/api-request-logging.ts`, test `test/api-request-logging.test.ts`.
+- `/export <file>.md` exports the visible conversation as Markdown with thinking omitted and tools rendered like interactive mode. `packages/coding-agent/src/core/session-export.ts` (`exportSessionToMarkdown`), `AgentSession.exportToMarkdown()`, test `test/export-markdown.test.ts`.
+- Interactive mode prints a turn-usage line (uncached input, output, cache read, cache write, cost) after every foreground run, including tool-reported usage and excluding compaction. `interactive-mode.ts` (`showTurnUsage`), test `test/interactive-mode-turn-usage.test.ts`.
+- Shift+Enter under tmux: `matchesKey`/`parseKey` treat legacy `\x1b\r` and `\n` as shift+enter regardless of Kitty protocol state (upstream only does so while Kitty is active and otherwise reads `\x1b\r` as alt+enter and `\n` as enter). `packages/tui/src/keys.ts`.
+- `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and matching `@earendil-works/*` ranges, or npm installs a nested published copy.
 
 ## Fullscreen mouse-wheel scrolling has a configurable step
 

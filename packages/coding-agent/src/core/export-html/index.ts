@@ -4,7 +4,6 @@ import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
-import { omitCacheWarmEntries } from "../cache-warmup.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
@@ -250,7 +249,6 @@ export async function exportSessionToHtml(
 	}
 
 	const entries = sm.getEntries();
-	const visibleSession = omitCacheWarmEntries(entries, sm.getLeafId());
 
 	// Pre-render custom tools if a tool renderer is provided
 	let renderedTools: Record<string, RenderedToolHtml> | undefined;
@@ -264,8 +262,8 @@ export async function exportSessionToHtml(
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: visibleSession.entries,
-		leafId: visibleSession.leafId,
+		entries,
+		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
 		renderedTools,
@@ -296,12 +294,11 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	const sm = SessionManager.open(resolvedInputPath);
-	const visibleSession = omitCacheWarmEntries(sm.getEntries(), sm.getLeafId());
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: visibleSession.entries,
-		leafId: visibleSession.leafId,
+		entries: sm.getEntries(),
+		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,
 	};

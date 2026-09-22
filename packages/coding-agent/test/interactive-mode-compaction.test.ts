@@ -151,11 +151,6 @@ describe("InteractiveMode compaction events", () => {
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
 			flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
-			cacheWarmController: {
-				invalidate: vi.fn().mockResolvedValue(undefined),
-				resume: vi.fn().mockResolvedValue(undefined),
-			},
-			session: { isStreaming: false },
 			settingsManager: { getShowTerminalProgress: () => false },
 			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
@@ -200,8 +195,6 @@ describe("InteractiveMode compaction events", () => {
 			usage,
 		});
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
-		expect(fakeThis.cacheWarmController.invalidate).toHaveBeenCalledTimes(1);
-		expect(fakeThis.cacheWarmController.resume).toHaveBeenCalledTimes(1);
 	});
 
 	test("updates the working state when the same agent run resumes after compaction", async () => {
@@ -233,6 +226,24 @@ describe("InteractiveMode compaction events", () => {
 		expect(fakeThis.showWorkingStatusIndicator).toHaveBeenCalledTimes(1);
 		expect(fakeThis.clearStatusIndicator).toHaveBeenCalledTimes(1);
 		expect(fakeThis.ui.requestRender).toHaveBeenCalledTimes(2);
+	});
+
+	// Regression test for #9340.
+	test("routes interactive response aborts through AgentSession", () => {
+		const abort = vi.fn(async () => {});
+		const ui = {
+			clearAllQueues: () => ({ steering: [], followUp: [] }),
+			updatePendingMessagesDisplay: vi.fn(),
+			session: { abort },
+		};
+		const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
+			this: typeof ui,
+			options?: { abort?: boolean },
+		) => number;
+
+		restoreQueuedMessagesToEditor.call(ui, { abort: true });
+
+		expect(abort).toHaveBeenCalledOnce();
 	});
 
 	test("preserves steering behavior when flushing into an active agent run", async () => {

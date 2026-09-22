@@ -130,6 +130,7 @@ For each built-in provider, pi maintains a list of tool-capable models. Configur
 - Together AI
 - Baseten
 - Kimi For Coding
+- Meta
 - MiniMax
 - Xiaomi MiMo
 - Xiaomi MiMo Token Plan (China)
@@ -191,11 +192,11 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
 | `/compact [prompt]` | Manually compact context, optional custom instructions |
-| `/warm [on\|off]` | Show, enable, or disable Claude prompt-cache warming |
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML or JSONL file |
 | `/import <file>` | Import and resume a session from a JSONL file |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
+| `/bug [description]` | Report a bug to the Pi developers; see [Sessions](docs/sessions.md#reporting-bugs) |
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
@@ -258,7 +259,7 @@ Use `/session` in interactive mode to see the current session ID before reusing 
 
 ### Branching
 
-**`/tree`** - Navigate the session tree in-place. Select any previous point, continue from there, and switch between branches. All history preserved in a single file.
+**`/tree`** - Navigate the session tree in-place. Select any previous point, continue from there, and switch between branches. All history preserved in a single file. Selecting a point while the model is responding cancels that response. Navigation cannot proceed while compaction or another tree navigation is still running; wait for it to finish and retry.
 
 <p align="center"><img src="docs/images/tree-view.png" alt="Tree View" width="600"></p>
 
@@ -283,13 +284,18 @@ Long sessions can exhaust context windows. Compaction summarizes older messages 
 
 Compaction is lossy. The full history remains in the JSONL file; use `/tree` to revisit. Customize compaction behavior via [extensions](#extensions). See [docs/compaction.md](docs/compaction.md) for internals.
 
-### Claude Cache Warming
+Session model context is projected from append-only history. Extensions can append a `context_edit` to omit or replace an earlier message only for future model requests; raw history and usage remain unchanged:
 
-Start interactive mode with `--keep-cache-warm` or `-kw` to keep the current `anthropic-messages` model's prompt cache alive while the agent is idle. `/warm on` and `/warm off` control the scheduler for the current process; bare `/warm` reports its state.
+```typescript
+const assistantId = sessionManager.appendMessage(partialAssistant);
+sessionManager.appendContextEdit(assistantId, null); // Hidden from model context, retained in JSONL.
+```
 
-After the first successful foreground request reports a cache read or write, Pi refreshes that proven lease ten seconds before its five-minute expiry, or ten seconds before the one-hour expiry selected by `PI_CACHE_RETENTION=long`. Empty, cold, and too-short sessions wait instead of creating a cache with a maintenance call. Maintenance reuses the exact effective system prompt and thinking configuration: thinking-disabled and adaptive-thinking requests use zero output tokens, while budget-based extended thinking asks `Reply only with OK.` and allows exactly one answer token beyond its thinking budget. The status box above the editor shows how long the active branch has remained warm and the cumulative cost of hidden maintenance requests. Warm requests do not appear in conversation history. A private marker in the session tree stores the effective prompt as a compact delta from Pi's base prompt, allowing a resumed session to reconstruct and verify a lease that is still warm. Markers whose base prompt changed, or that live on sibling branches, are ignored.
+A retain-none compaction uses `appendCompaction(summary, null, tokensBefore)` to make the exact summary the new context root while preserving prior raw entries.
 
-Interactive mode also prints a usage line after every foreground agent run. It aggregates uncached input, output, cache reads, cache writes, and total cost across provider calls and usage-reported tools in that run. Compaction and branch-summary requests are excluded.
+### Turn Usage
+
+Interactive mode prints a usage line after every foreground agent run. It aggregates uncached input, output, cache reads, cache writes, and total cost across provider calls and usage-reported tools in that run. Compaction and branch-summary requests are excluded.
 
 ---
 
@@ -391,6 +397,33 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => { ... });
 }
 ```
+
+`turn_end` and `agent_before_settle` are actionable persistence boundaries. Handlers can append structural entries and request one continuation. Later handlers see earlier proposals:
+
+```typescript
+let replacedResponse = false;
+pi.on("turn_end", (event) => {
+  if (replacedResponse || event.outcome !== "completed" || event.toolResults.length > 0) return;
+  replacedResponse = true;
+  return {
+    entries: [
+      ...event.entries,
+      { type: "context_edit", targetId: event.messageEntryId, replacement: null },
+      {
+        type: "custom_message",
+        customType: "replacement-instruction",
+        content: "Answer again using the persisted user request.",
+        display: false,
+      },
+    ],
+    continue: true,
+  };
+});
+```
+
+Continuation is one-shot per boundary result, not per registered handler. It ensures one next provider request: tool-result, steering, or follow-up scheduling can satisfy that request without adding another one; otherwise Pi makes one context-only request. Guard handlers like the example above because an unconditional `continue: true` is evaluated again after the next response and can loop indefinitely. Error and aborted responses remain hard exits.
+
+Use `agent_before_settle` for final actions after retries, compaction, and queued input are exhausted. See [docs/extensions.md](docs/extensions.md#agent_start--agent_end--agent_before_settle--agent_settled).
 
 The default export can also be `async`. pi waits for async extension factories before startup continues, which is useful for one-time initialization such as fetching remote model lists before calling `pi.registerProvider()`.
 
@@ -574,7 +607,6 @@ cat README.md | pi -p "Summarize this text"
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
 | `--list-models [search]` | List available models |
-| `--keep-cache-warm`, `-kw` | Keep Claude prompt caches warm while interactive and idle |
 
 ### Session Options
 

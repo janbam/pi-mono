@@ -12,7 +12,6 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { isCacheWarmEntry } from "../../../core/cache-warmup.ts";
 import type { ExtensionShortcutTreeSelection } from "../../../core/extensions/types.ts";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.ts";
@@ -350,8 +349,8 @@ class TreeList implements Component {
 
 		this.filteredNodes = this.flatNodes.filter((flatNode) => {
 			const entry = flatNode.node.entry;
+			if (entry.type === "usage") return false;
 			const isCurrentLeaf = entry.id === this.currentLeafId;
-			if (isCacheWarmEntry(entry)) return false;
 
 			// Skip assistant messages with only tool calls (no text) unless error/aborted
 			// Always show current leaf so active position is visible
@@ -370,6 +369,7 @@ class TreeList implements Component {
 			// Entry types hidden in default view (settings/bookkeeping)
 			const isSettingsEntry =
 				entry.type === "label" ||
+				entry.type === "context_edit" ||
 				entry.type === "custom" ||
 				entry.type === "model_change" ||
 				entry.type === "thinking_level_change" ||
@@ -619,6 +619,9 @@ class TreeList implements Component {
 			case "custom":
 				parts.push("custom", entry.customType);
 				break;
+			case "context_edit":
+				parts.push("context edit", entry.replacement === null ? "omit" : "replace", entry.targetId);
+				break;
 			case "label":
 				parts.push("label", entry.label ?? "");
 				break;
@@ -848,6 +851,9 @@ class TreeList implements Component {
 				break;
 			case "custom":
 				result = theme.fg("dim", `[custom: ${entry.customType}]`);
+				break;
+			case "context_edit":
+				result = theme.fg("dim", `[context ${entry.replacement === null ? "omit" : "replace"}: ${entry.targetId}]`);
 				break;
 			case "label":
 				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);

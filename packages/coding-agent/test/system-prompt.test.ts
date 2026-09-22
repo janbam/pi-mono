@@ -22,7 +22,7 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain("Available tools:\n(none)");
+			expect(prompt).toContain("<tools>\n(none)\n");
 		});
 
 		test("shows file paths guideline even with no tools", () => {
@@ -34,6 +34,46 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).toContain("Show file paths clearly");
+		});
+	});
+
+	describe("prompt structure", () => {
+		test("keeps the default and custom prompt prefixes exact", () => {
+			const defaultPrompt = buildSystemPrompt({ cwd: "/tmp", selectedTools: [], contextFiles: [], skills: [] });
+			const customPrompt = buildSystemPrompt({
+				customPrompt: "You are Exact.",
+				cwd: "/tmp",
+				selectedTools: [],
+				contextFiles: [],
+				skills: [],
+			});
+
+			// JBMOD: the fork replaces upstream's pi-harness preamble.
+			expect(
+				defaultPrompt.startsWith("You are the top senior software engineer and system architecture designer."),
+			).toBe(true);
+			expect(customPrompt.startsWith("You are Exact.\n\n<cwd>")).toBe(true);
+		});
+
+		test("preserves an exact forced prompt without sections", () => {
+			expect(buildSystemPrompt({ forceSystemPrompt: "exact", cwd: "/tmp" })).toBe("exact");
+		});
+
+		test("maps appended instructions and project context to stable sections", () => {
+			const prompt = buildSystemPrompt({
+				customPrompt: "You are Exact.",
+				appendSystemPrompt: "Additional instructions.",
+				contextFiles: [{ path: "/tmp/AGENTS.md", content: "Project instructions." }],
+				selectedTools: [],
+				skills: [],
+				cwd: "/tmp",
+			});
+
+			expect(prompt).toContain("<addendum>\nAdditional instructions.\n</addendum>");
+			expect(prompt).toContain(
+				'<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="/tmp/AGENTS.md">',
+			);
+			expect(prompt).toContain("<cwd>\n/tmp\n</cwd>");
 		});
 	});
 
@@ -121,9 +161,9 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			// Default prompt markers must be absent; only the cwd footer remains
-			expect(prompt).not.toContain("Available tools:");
-			expect(prompt.trim()).toBe(`Current working directory: ${process.cwd().replace(/\\/g, "/")}`);
+			// Default prompt sections must be absent; only the cwd section remains
+			expect(prompt).not.toContain("<tools>");
+			expect(prompt.trim()).toBe(`<cwd>\n${process.cwd().replace(/\\/g, "/")}\n</cwd>`);
 		});
 
 		test("undefined custom prompt keeps the default prompt", () => {
@@ -133,7 +173,7 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain("Available tools:");
+			expect(prompt).toContain("<tools>");
 		});
 	});
 
@@ -176,6 +216,7 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
+			expect(prompt).toContain("<skills>");
 			expect(prompt).toContain("<available_skills>");
 			expect(prompt).toContain("<name>test-skill</name>");
 			expect(prompt).toContain("Use bash to load a skill's file");
