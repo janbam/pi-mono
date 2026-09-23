@@ -554,7 +554,8 @@ function buildRequestBody(
 		model: model.id,
 		store: false,
 		stream: true,
-		instructions: instructions || "You are a helpful assistant.",
+		// Send the caller's system prompt verbatim; an empty prompt omits the field rather than getting a placeholder.
+		...(instructions ? { instructions } : {}),
 		input: messages,
 		text: { verbosity: options?.textVerbosity || "low" },
 		include: ["reasoning.encrypted_content"],

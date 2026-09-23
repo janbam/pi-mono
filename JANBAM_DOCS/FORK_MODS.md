@@ -175,6 +175,8 @@ Upstream behavior: the default prompt starts with the pi-harness introduction, i
 
 Fork behavior: the preamble is "You are the top senior software engineer and system architecture designer.", the conciseness rule is stricter (high-signal, no preambles or hedging, ask about ambiguities), and the pi documentation section is omitted. An explicit empty custom prompt is a valid empty base prompt; only `undefined` selects the default. `--append-system-prompt ""` likewise disables appended prompts, replacing `APPEND_SYSTEM.md` discovery.
 
+The OpenAI Codex provider omits the `instructions` field when the system prompt is empty or missing. Upstream substitutes `"You are a helpful assistant."` (upstream #4184, from when the backend rejected an absent `instructions` field with HTTP 400); the backend now accepts requests without it over both WebSocket and SSE. `packages/ai/src/api/openai-codex-responses.ts` (`buildRequestBody`), test `packages/ai/test/openai-codex-stream.test.ts`.
+
 `-nd` / `--no-cwd` omits the `<cwd>` system prompt section for the process, including an extension-supplied replacement for that section. It does not change the working directory used for tools, resource discovery, or sessions. The SDK can select the same behavior with `createAgentSession({ noCwd: true })`.
 
 Implementation: `packages/coding-agent/src/core/system-prompt.ts` (`buildSystemPromptSections`, `buildRules`), `src/core/resource-loader.ts`, `src/cli/args.ts`.
