@@ -41,6 +41,8 @@ setDefaultStreamFn(streamSimple);
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
 	cwd?: string;
+	/** Omit the cwd section from the system prompt while retaining cwd for runtime behavior. */
+	noCwd?: boolean;
 	/** Global config directory. Default: ~/.pi/agent */
 	agentDir?: string;
 
@@ -460,6 +462,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager,
 		settingsManager,
 		cwd,
+		noCwd: options.noCwd,
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

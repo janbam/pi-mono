@@ -75,6 +75,20 @@ describe("buildSystemPrompt", () => {
 			);
 			expect(prompt).toContain("<cwd>\n/tmp\n</cwd>");
 		});
+
+		test("omits only the cwd section when requested, including custom cwd content", () => {
+			const prompt = buildSystemPrompt({
+				cwd: "/tmp",
+				noCwd: true,
+				customPrompt: "You are Exact.",
+				contextFiles: [{ path: "/tmp/AGENTS.md", content: "Project instructions." }],
+				sections: { cwd: "override" },
+			});
+
+			expect(prompt).toContain("You are Exact.");
+			expect(prompt).toContain("<project_context>");
+			expect(prompt).not.toContain("<cwd>");
+		});
 	});
 
 	describe("default tools", () => {

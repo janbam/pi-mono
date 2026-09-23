@@ -26,6 +26,20 @@ import type { ExtensionFactory } from "../src/index.ts";
 import { createHarness } from "./suite/harness.ts";
 
 describe("system prompt updates", () => {
+	test("keeps the cwd section absent after a request when noCwd is enabled", async () => {
+		const harness = await createHarness({ noCwd: true });
+		try {
+			harness.setResponses([fauxAssistantMessage("done")]);
+			await harness.session.prompt("hello");
+			const head = getCurrentSystemMessage(harness.session.messages);
+			expect(head?.sections).not.toHaveProperty("cwd");
+			expect(harness.session.systemPrompt).not.toContain("<cwd>");
+			expect(harness.sessionManager.getCwd()).toBe(process.cwd());
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	test("declares the prompt and tools once and reuses them across resume", async () => {
 		const harness = await createHarness();
 		try {

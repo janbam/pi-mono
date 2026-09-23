@@ -184,6 +184,8 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
   Replaces the default system prompt with text or the contents of an existing file. An explicit empty string disables the base prompt while retaining context files and skills.
 - `--append-system-prompt <text|path>`<br>
   Appends text or an existing file to the system prompt and is repeatable. It replaces `APPEND_SYSTEM.md` discovery; an explicit empty string disables appends.
+- `-nd`, `--no-cwd`<br>
+  Omits the `<cwd>` section from the system prompt. The working directory still controls tools, resource discovery, and sessions.
 - `-kw`, `--keep-cache-warm`<br>
   Keeps an eligible prompt cache warm while running and idle for this process only. See [Cache Warming](settings.md#cache-warming).
 - `--log-api-requests <file>`<br>

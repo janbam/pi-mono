@@ -378,6 +378,17 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--no-cwd flag", () => {
+		test("parses both spellings without consuming the prompt", () => {
+			for (const flag of ["--no-cwd", "-nd"]) {
+				const result = parseArgs([flag, "hello"]);
+				expect(result.noCwd).toBe(true);
+				expect(result.messages).toEqual(["hello"]);
+			}
+			expect(parseArgs([]).noCwd).toBeUndefined();
+		});
+	});
+
 	// JBMOD: process-only cache-warming override.
 	describe("--keep-cache-warm flag", () => {
 		test("parses --keep-cache-warm and its -kw shorthand", () => {
