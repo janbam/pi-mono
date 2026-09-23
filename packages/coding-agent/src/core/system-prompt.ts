@@ -18,7 +18,7 @@ export interface BuildSystemPromptOptions {
 	toolGuidelines?: Record<string, string[]>;
 	/** Additional guideline bullets appended to the default system prompt rules. */
 	promptGuidelines?: string[];
-	/** Text appended from user configuration before project context, skills, and cwd. */
+	/** Text appended verbatim (no tag framing) from user configuration before project context, skills, and cwd. */
 	appendSystemPrompt?: string;
 	/** Additional XML-wrapped prompt sections keyed by tag name. */
 	sections?: Record<string, string>;
@@ -44,8 +44,8 @@ export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 };
 
 /**
- * Ordered system prompt sections, keyed by name. `preamble` is untagged text; every other
- * section is wrapped in a tag of the same name so the model can match later updates to it.
+ * Ordered system prompt sections, keyed by name. `preamble` and `addendum` are untagged text;
+ * every other section is wrapped in a tag of the same name so the model can match later updates to it.
  * These become `SystemMessage.sections` in the transcript.
  */
 export type SystemPromptSections = Record<string, string>;
@@ -178,7 +178,9 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 
 	const sections: SystemPromptSections = { preamble: promptSections.preamble };
 	for (const [name, content] of Object.entries(promptSections)) {
-		if (name !== "preamble") sections[name] = `<${name}>\n${content}\n</${name}>`;
+		if (name === "preamble") continue;
+		// JBMOD: appended user prompts join the prompt verbatim, separated only by the blank line between sections
+		sections[name] = name === "addendum" ? content : `<${name}>\n${content}\n</${name}>`;
 	}
 	return sections;
 }
