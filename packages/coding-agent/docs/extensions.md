@@ -102,6 +102,8 @@ Events cover resource discovery, sessions, agent and message lifecycle, provider
 
 `before_agent_start` exposes both the current prompt and its structured `systemPromptOptions`. Prefer changing prompt sections, selected tools, or guidelines so Pi can append a transcript delta. Returning `systemPrompt`, or setting `forceSystemPrompt`, replaces the whole prompt for that run while the transcript continues recording the structured sections. Providers receive the forced text as their leading system prompt.
 
+To add your own prompt text, set `event.systemPromptOptions.sections.<name>` (lowercase name, not `preamble`). Pi renders it as `<name>...</name>` after the built-in sections. Each `before_agent_start` starts from a fresh copy of the base options, so set the section on every call where it should stay and omit it to remove it. Unchanged text produces no transcript delta and keeps the provider prompt cache intact. Runs started by `pi.sendMessage(..., { triggerTurn: true })` skip `before_agent_start`; Pi keeps the extension sections the model already has for those runs instead of removing them. This does not apply to overrides of built-in section names (`tools`, `rules`, `addendum`, `project_context`, `skills`, `cwd`), which those runs rebuild from live state, so use a name of your own.
+
 `message_end` can replace a finalized message while preserving its role. `tool_call` can mutate input or block execution. `tool_result` handlers compose, with each handler seeing prior changes.
 
 <a id="context_with_system"></a>

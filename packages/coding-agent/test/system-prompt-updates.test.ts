@@ -20,6 +20,7 @@ import {
 	buildSystemPromptSections,
 	buildSystemPromptState,
 	diffSystemPromptSections,
+	extensionSectionsFromTranscript,
 } from "../src/core/system-prompt.ts";
 import type { ExtensionFactory } from "../src/index.ts";
 import { createHarness } from "./suite/harness.ts";
@@ -90,6 +91,61 @@ describe("system prompt updates", () => {
 		expect(diffSystemPromptSections(previous, buildSystemPromptSections({ cwd: "/tmp" }))).toEqual({
 			plan_mode: null,
 		});
+	});
+
+	test("recovers only extension sections the builder can rebuild byte-identically", () => {
+		const built = buildSystemPromptSections({
+			cwd: "/tmp",
+			appendSystemPrompt: "Appended.",
+			sections: { plan_mode: "Plan only." },
+		});
+		expect(extensionSectionsFromTranscript(built)).toEqual({ plan_mode: "Plan only." });
+		// Foreign sections (invalid name, unwrapped text) are not reconstructable and stay out.
+		expect(extensionSectionsFromTranscript({ Upper: "<Upper>\nx\n</Upper>", raw: "not wrapped" })).toEqual({});
+	});
+
+	test("a triggered run keeps extension sections instead of patching them away", async () => {
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				name: "noop",
+				label: "noop",
+				description: "noop",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+			});
+			pi.on("before_agent_start", (event) => {
+				event.systemPromptOptions.sections.mode = "Stay terse.";
+			});
+		};
+		const harness = await createHarness({ extensionFactories: [extension], initialActiveToolNames: ["noop"] });
+		try {
+			const requests: TranscriptContext[] = [];
+			const capture = (message: ReturnType<typeof fauxAssistantMessage>) => (providerContext: TranscriptContext) => {
+				requests.push(providerContext);
+				return message;
+			};
+			harness.setResponses([
+				capture(fauxAssistantMessage("first")),
+				capture(fauxAssistantMessage([fauxToolCall("noop", {})], { stopReason: "toolUse" })),
+				capture(fauxAssistantMessage("done")),
+			]);
+			await harness.session.prompt("one");
+			// No before_agent_start runs here; the tool call forces a next-turn prompt refresh.
+			await harness.session.sendCustomMessage(
+				{ customType: "trigger", content: "continue", display: false },
+				{ triggerTurn: true },
+			);
+			expect(requests).toHaveLength(3);
+
+			// The section survives every request, and the refresh emits no removal patch.
+			for (const request of requests) {
+				expect(getCurrentSystemPrompt(request.messages)).toContain("<mode>\nStay terse.\n</mode>");
+			}
+			expect(harness.session.messages.filter((message) => message.role === "system")).toHaveLength(1);
+			expect(getCurrentSystemPrompt(harness.session.messages)).toContain("<mode>\nStay terse.\n</mode>");
+		} finally {
+			harness.cleanup();
+		}
 	});
 
 	test("keeps the preamble untagged and replaces it like any section", () => {

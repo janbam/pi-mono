@@ -179,6 +179,19 @@ Implementation: `packages/coding-agent/src/core/system-prompt.ts` (`buildSystemP
 
 Tests adjusted for the fork prompt: `packages/coding-agent/test/system-prompt.test.ts`, `test/system-prompt-updates.test.ts`, `test/suite/agent-session-boundaries.test.ts` (replacement text sized to cross the compaction threshold without the docs section), and `packages/evals/test/harness.test.ts` (docs-stripping variant tests skipped because the section does not exist). Consequence: upstream's docs eval runner (`packages/evals`, both `with_docs` and `without_docs` variants) does not work in the fork.
 
+## Triggered runs keep extension prompt sections
+
+Upstream behavior: runs started by `pi.sendMessage(..., { triggerTurn: true })` skip `before_agent_start`, so they have no per-run prompt options. The next-turn refresh after the first response rebuilds the prompt from base options and diffs it against the transcript. Every extension section set by an earlier `before_agent_start` (for example `sections.telegraph`) is patched away with `section: null`, and the next prompt adds it back. On providers without mid-conversation system messages, each patch rewrites the collapsed system head, so both requests miss the prompt cache.
+
+Fork behavior: when a run has no per-run options, the refresh seeds `sections` with the extension-owned sections the model currently has, recovered from the transcript. Built-in sections (`preamble`, `tools`, `rules`, `addendum`, `project_context`, `skills`, `cwd`) are still rebuilt from live state, including when an extension overrode one of those names through `sections`. Such an override is not kept in triggered runs; the extension docs tell authors to use their own names. Only a `before_agent_start` pass may change or remove an extension section. Sections with invalid names or text that is not the builder's `<name>\n...\n</name>` wrapping cannot be rebuilt byte-identically and are dropped as before.
+
+Implementation:
+
+- Section recovery: `packages/coding-agent/src/core/system-prompt.ts` (`extensionSectionsFromTranscript`)
+- Seeding in the next-turn refresh: `packages/coding-agent/src/core/agent-session.ts` (`_installAgentNextTurnRefresh`)
+- Tests: `packages/coding-agent/test/system-prompt-updates.test.ts`
+- Extension docs: `packages/coding-agent/docs/extensions.md` (section lifecycle paragraph under Events and concurrency)
+
 ## Direct registered-tool execution
 
 Fork behavior: `AgentSession.executeTool()` for SDK hosts, `pi.executeTool()` for extensions, and RPC commands `get_all_tools` / `execute_tool` run a registered tool by name without starting an agent turn or appending a tool-result message. Argument preparation, schema validation, `tool_call` blocking, `tool_result` mutation, and lifecycle events behave as for model-requested calls.
