@@ -524,7 +524,9 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
 		...resolutionOptions,
 	});
 
-	const module = await jiti.import(extensionPath, { default: true });
+	// Import via the canonical path, as Node does: jiti's tsconfig discovery would otherwise
+	// resolve relative `extends` from a symlinked directory and miss the real config.
+	const module = await jiti.import(fs.realpathSync(extensionPath), { default: true });
 	const factory = module as ExtensionFactory;
 	if (typeof factory !== "function") {
 		return undefined;
