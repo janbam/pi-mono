@@ -1,6 +1,9 @@
 # Session File Format
 
-Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Conversation entries form a tree via `id`/`parentId`; session-global state records are ordered append-only records outside that tree.
+Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Conversation entries form a tree via `id`/`parentId`; session-global state records are append-only metadata outside that tree.
+
+For programmatic creation, persistence, and tree navigation, see the [`SessionManager` API](sdk.md#sessionmanager-api).
+
 
 ## File Location
 
@@ -24,179 +27,28 @@ Sessions have a version field in the header:
 - **Version 2**: Tree structure with `id`/`parentId` linking
 - **Version 3**: Renamed `hookMessage` role to `custom` (extensions unification)
 
-Existing sessions are automatically migrated to the current version (v3) when loaded. Session-global state uses an additive `type: "session"` metadata envelope, so pre-state v3 readers skip it under their existing header-record rule instead of misclassifying it as a tree entry. Supported readers distinguish the first-line header by its `id` field and later state metadata by `sessionState`; no version bump is required. Files containing the temporary flat `type: "session_state"` encoding are normalized on load.
+Existing sessions are automatically migrated to the current version (v3) when loaded. Session-global state uses a `type: "session"` metadata envelope so older v3 readers skip it. Supported readers distinguish the first-line header by its `id` and later state records by `sessionState`; no version bump is needed. Files with the temporary flat `type: "session_state"` encoding are normalized on load.
 
 ## Source Files
 
 Source on GitHub ([pi](https://github.com/earendil-works/pi)):
 - [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts) - Session entry types and SessionManager
-- [`packages/coding-agent/src/core/messages.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/messages.ts) - Extended message types (BashExecutionMessage, CustomMessage, etc.)
-- [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/ai/src/types.ts) - Base message types (UserMessage, AssistantMessage, ToolResultMessage)
-- [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/agent/src/types.ts) - AgentMessage union type
+- [Message Types](message-types.md) - Shared message and content-block reference
+- [`packages/coding-agent/src/core/messages.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/messages.ts) - Extended message types
+- [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/ai/src/types.ts) - Base message and content-block types
+- [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/agent/src/types.ts) - Extensible `AgentMessage` union
 
 For TypeScript definitions in your project, inspect `node_modules/@earendil-works/pi-coding-agent/dist/` and `node_modules/@earendil-works/pi-ai/dist/`.
 
-## Message Types
+## Messages
 
-Session entries contain `AgentMessage` objects. Understanding these types is essential for parsing sessions and writing extensions.
+A `message` entry stores an [`AgentMessage`](message-types.md). Message content blocks, roles, usage, and message timestamps are defined in [Message Types](message-types.md).
 
-### Content Blocks
-
-Messages contain arrays of typed content blocks:
-
-```typescript
-interface TextContent {
-  type: "text";
-  text: string;
-  textSignature?: string;
-}
-
-interface ImageContent {
-  type: "image";
-  data: string;      // base64 encoded
-  mimeType: string;  // e.g., "image/jpeg", "image/png"
-}
-
-interface ThinkingContent {
-  type: "thinking";
-  thinking: string;
-  thinkingSignature?: string;
-  redacted?: boolean;
-}
-
-interface ToolCall {
-  type: "toolCall";
-  id: string;
-  name: string;
-  arguments: Record<string, any>;
-  thoughtSignature?: string;
-  namespace?: string;
-}
-```
-
-### Base Message Types (from pi-ai)
-
-```typescript
-interface SystemMessage {
-  role: "system";
-  content: string | TextContent[];
-  toolsAdded?: Tool[];
-  toolsRemoved?: Array<{ name: string }>;
-  timestamp: number;  // Unix ms
-}
-
-interface UserMessage {
-  role: "user";
-  content: string | (TextContent | ImageContent)[];
-  timestamp: number;  // Unix ms
-}
-
-interface AssistantMessage {
-  role: "assistant";
-  content: (TextContent | ThinkingContent | ToolCall)[];
-  api: string;
-  provider: string;
-  model: string;
-  responseModel?: string;
-  responseId?: string;
-  providerThinkingLevel?: string;
-  diagnostics?: AssistantMessageDiagnostic[];
-  usage: Usage;
-  stopReason: "pending" | "stop" | "length" | "toolUse" | "error" | "aborted" | "deferred";
-  deferred?: DeferredHandle;
-  errorMessage?: string;
-  rawStopReason?: string;
-  endTurn?: boolean;
-  timestamp: number;
-}
-
-interface ToolResultMessage {
-  role: "toolResult";
-  toolCallId: string;
-  toolName: string;
-  content: (TextContent | ImageContent)[];
-  details?: any;      // Tool-specific metadata
-  usage?: Usage;      // Nested LLM work performed by the tool
-  isError: boolean;
-  timestamp: number;
-}
-
-interface Usage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cacheWrite1h?: number;
-  reasoning?: number;
-  totalTokens: number;
-  cost: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    total: number;
-  };
-}
-```
-
-`"pending"` is reserved for partial messages in streaming events. Terminal events replace it with a completion reason before Pi persists the assistant message, so `"pending"` should never appear in session JSONL. `"deferred"` is a terminal reason for a provider response that will complete later; its `deferred` handle contains the provider data needed to retrieve that response.
-
-### Extended Message Types (from pi-coding-agent)
-
-```typescript
-interface BashExecutionMessage {
-  role: "bashExecution";
-  command: string;
-  output: string;
-  exitCode: number | undefined;
-  cancelled: boolean;
-  truncated: boolean;
-  fullOutputPath?: string;
-  excludeFromContext?: boolean;  // true for !! prefix commands
-  timestamp: number;
-}
-
-interface CustomMessage {
-  role: "custom";
-  customType: string;            // Extension identifier
-  content: string | (TextContent | ImageContent)[];
-  display: boolean;              // Show in TUI
-  details?: any;                 // Extension-specific metadata
-  timestamp: number;
-}
-
-interface BranchSummaryMessage {
-  role: "branchSummary";
-  summary: string;
-  fromId: string | null;         // Previous leaf whose abandoned path was summarized
-  timestamp: number;
-}
-
-interface CompactionSummaryMessage {
-  role: "compactionSummary";
-  summary: string;
-  tokensBefore: number;
-  timestamp: number;
-}
-```
-
-### AgentMessage Union
-
-```typescript
-type AgentMessage =
-  | SystemMessage
-  | UserMessage
-  | AssistantMessage
-  | ToolResultMessage
-  | BashExecutionMessage
-  | CustomMessage
-  | BranchSummaryMessage
-  | CompactionSummaryMessage;
-```
+Session entry timestamps are ISO 8601 strings. The nested message timestamp is a Unix timestamp in milliseconds.
 
 ## Entry Base
 
-All conversation-tree entries extend `SessionEntryBase`. `SessionHeader` and `SessionStateEntry` do not:
+Conversation entries extend `SessionEntryBase`. `SessionHeader` and `SessionStateEntry` do not:
 
 ```typescript
 interface SessionEntryBase {
@@ -225,19 +77,13 @@ For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ pare
 
 ### SessionStateEntry
 
-Session-global extension state outside the conversation tree and model context. These metadata records deliberately have no `id` or `parentId`.
+Session-global extension state has no `id` or `parentId` and never enters the conversation tree or model context:
 
 ```json
 {"type":"session","timestamp":"2024-12-03T14:00:00.000Z","sessionState":{"key":"my-extension.settings","value":{"enabled":true}}}
 ```
 
-The shared `type: "session"` envelope is a compatibility encoding: pre-state v3 readers already skip every such record, while supported readers use `sessionState` to distinguish state metadata from the first-line header.
-
-Records are interpreted in physical file order. Repeated writes are append-only and the latest nested fact for a key wins, regardless of branch position or timestamp. An omitted `sessionState.value` clears the key; JSON `null` is a stored value.
-
-Keys share one open namespace. They do not reserve ownership or prevent another extension from reading or overwriting the same key. Values may be any JSON value: object, array, string, finite number, boolean, or `null`. `NaN`, `Infinity`, and `-Infinity` are rejected, including when nested.
-
-State records are excluded from `SessionEntry`, `getEntries()`, `getTree()`, `getBranch()`, tree navigation, branch summaries, context building, compaction input, and transcript rendering.
+Records are replayed in physical file order. The latest write for a key wins regardless of branch or timestamp. Omitting `sessionState.value` clears a key; `null` remains a stored value. Keys share one open namespace. Values may be JSON objects, arrays, strings, finite numbers, booleans, or `null`; non-finite numbers are rejected recursively. State records are excluded from `SessionEntry`, `getEntries()`, tree navigation, summaries, context, and transcript rendering.
 
 ### SessionMessageEntry
 
@@ -325,13 +171,13 @@ Optional fields:
 
 ### CustomEntry
 
-Branch-local extension data. Does NOT participate in LLM context, but does participate in the conversation tree.
+Branch-local extension state. Does not participate in LLM context, but follows the conversation tree.
 
 ```json
 {"type":"custom","id":"h8i9j0k1","parentId":"g7h8i9j0","timestamp":"2024-12-03T14:20:00.000Z","customType":"my-extension","data":{"count":42}}
 ```
 
-Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context. Use the session-global state API instead when tree navigation must not change the effective value.
+Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context. Use session-global state when tree navigation must not change the value.
 
 ### CustomMessageEntry
 
@@ -368,8 +214,8 @@ The session name is displayed in the session selector (`/resume`) instead of the
 
 ## Tree Structure
 
-Conversation entries normally form one tree, but navigation APIs can create multiple roots. Session-global state metadata never participates:
-- A root entry has `parentId: null`; the first conversation entry is initially the root
+Conversation entries normally form one tree, but navigation APIs can create multiple roots. Session-global state metadata never joins it:
+- A root entry has `parentId: null`; the first entry is initially the root
 - Each non-root entry points to its parent via `parentId`
 - Branching creates new children from an earlier entry
 - The "leaf" is the current position in the tree
@@ -383,7 +229,7 @@ Conversation entries normally form one tree, but navigation APIs can create mult
 
 ## Context Building
 
-`buildContextEntries()` walks from the current conversation leaf to the root, producing the active entry list while honoring compaction. Session-global state records are filtered before this traversal:
+`buildContextEntries()` walks from the current leaf to the root, producing the active entry list while honoring compaction. Session-global state records are filtered before this traversal:
 
 1. Collects all entries on the path
 2. If one or more `CompactionEntry` values are on the path, uses the latest one:
@@ -426,9 +272,6 @@ for (const line of lines) {
         console.log(`Session v${entry.version ?? 1}: ${entry.id}`);
       }
       break;
-    case "session_state": // Temporary flat encoding; current pi normalizes this on load.
-      console.log(`Legacy global state ${entry.key}: ${"value" in entry ? JSON.stringify(entry.value) : "<cleared>"}`);
-      break;
     case "message":
       console.log(`[${entry.id}] ${entry.message.role}: ${JSON.stringify(entry.message.content)}`);
       break;
@@ -459,72 +302,3 @@ for (const line of lines) {
   }
 }
 ```
-
-## SessionManager API
-
-Key methods for working with sessions programmatically.
-
-### Static Creation Methods
-- `SessionManager.create(cwd, sessionDir?, options?)` - New session; `options` can set `id` and `parentSession`
-- `SessionManager.open(path, sessionDir?, cwdOverride?)` - Open existing session file
-- `SessionManager.continueRecent(cwd, sessionDir?)` - Continue most recent or create new
-- `SessionManager.inMemory(cwd?, options?, entries?)` - No file persistence, optionally initialized from entries
-- `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork session from another project
-
-### Static Listing Methods
-- `SessionManager.list(cwd, sessionDir?, onProgress?)` - List sessions for a directory
-- `SessionManager.listAll(onProgress?)` - List all sessions across all projects
-- `SessionManager.listAll(sessionDir?, onProgress?)` - List sessions from a custom session root
-
-### Instance Methods - Session Management
-- `newSession(options?)` - Start a new session (options: `{ id?: string, parentSession?: string }`)
-- `setSessionFile(path)` - Switch to a different session file
-- `createBranchedSession(leafId)` - Extract branch to a new session and snapshot effective session-global state; pass `null` for an empty derived conversation
-
-### Instance Methods - Appending (all return entry ID)
-- `appendMessage(message)` - Add message
-- `appendThinkingLevelChange(level)` - Record thinking change
-- `appendModelChange(provider, modelId)` - Record model change
-- `appendUsage(kind, provider, model, usage)` - Record model-attributed usage outside the conversation
-- `appendCompaction(summary, firstKeptEntryId, tokensBefore, details?, fromHook?, usage?)` - Add compaction
-- `appendCustomEntry(customType, data?)` - Branch-local extension entry (not in context)
-- `appendSessionInfo(name)` - Set session display name
-- `appendCustomMessageEntry(customType, content, display, details?)` - Extension message (in context)
-- `appendLabelChange(targetId, label)` - Set/clear label
-
-### Instance Methods - Tree Navigation
-- `getLeafId()` - Current position
-- `getLeafEntry()` - Get current leaf entry
-- `getEntry(id)` - Get entry by ID
-- `getBranch(fromId?)` - Walk from entry to root
-- `getTree()` - Get full tree structure
-- `getChildren(parentId)` - Get direct children
-- `getLabel(id)` - Get label for entry
-- `branch(entryId)` - Move leaf to earlier entry
-- `resetLeaf()` - Reset leaf to null (before any entries)
-- `branchWithSummary(entryId, summary, details?, fromHook?, usage?)` - Branch with context summary; `entryId` may be `null` to branch from the root
-
-### Instance Methods - Context & Info
-- `buildContextEntries()` - Get active branch entries with compaction applied
-- `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
-- `getEntries()` - All conversation-tree entries (excluding the header and state metadata)
-- `getHeader()` - Session header metadata
-- `getSessionName()` - Get display name from latest session_info entry
-- `getCwd()` - Working directory
-- `getSessionDir()` - Session storage directory
-- `getSessionId()` - Session UUID
-- `getSessionFile()` - Session file path (undefined for in-memory)
-- `isPersisted()` - Whether session is saved to disk
-- `getSessionState(key)` - Read the latest session-global JSON value; returns `undefined` when absent
-- `setSessionState(key, value)` - Append a session-global value; pass `undefined` to clear
-- `getSessionStateSnapshot()` - Defensive effective-state snapshot for derivation/export
-
-## Lifecycle and Derivation Semantics
-
-- Opening, resuming with `pi -c`, switching sessions, and reloading replay all state metadata in file order.
-- New sessions start with no session-global values.
-- In-memory sessions expose identical effective behavior without disk persistence.
-- `/tree` navigation changes only the conversation leaf and never rolls global state backward.
-- `/fork`, `/clone`, `createBranchedSession()`, CLI `--fork`, and active-branch JSONL export inherit one record per effective key at the derivation boundary. Runtime fork/clone snapshots after `session_before_fork` succeeds but before outgoing `session_shutdown`; state written during shutdown remains source-only. Obsolete writes and tombstones are not copied.
-- `/import` relocates the imported JSONL records without collapsing state history, then replays them normally. Import is not treated as a new derived session; normal runtime startup may append model or thinking records afterward.
-- State writes flush immediately, including before the first assistant message. A successful setter call is visible in the current runtime and after reopening the file; validation or persistence failure throws without changing effective state or retained file-entry history.

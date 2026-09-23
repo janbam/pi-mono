@@ -13,6 +13,8 @@ export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
+		// Fork and WAL tests open several SQLite handles; leave room for disk contention between test files.
+		testTimeout: 30_000,
 		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 		coverage: {
 			provider: "v8",
