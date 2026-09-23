@@ -203,6 +203,10 @@ This fork overrides the general command rule that forbids `npm run build` unless
 
 After finishing any code change in this fork, run `npm run build` before the required `npm run check`. The build is part of the normal verification loop here because stale compiled artifacts can make the runnable `pi` disagree with the updated source.
 
+## Pre-commit Hook Rewrites Unstaged Files
+
+`.husky/pre-commit` runs `npm run check`, whose `biome check --write` formats the whole repo, not just staged files. A commit can therefore silently reformat unstaged worktree files (e.g. a freshly regenerated `*.generated.ts` snapping back to its committed form). A "Fixed N file(s)" line or a vanished unstaged diff after committing is this, not lost work; review `git status` after committing.
+
 ## Maintaining the `upstream-release` branch
 
 The `upstream-release` branch is a read-only mirror of upstream's latest release tag. Recreate it when a new version is tagged:
