@@ -2519,7 +2519,26 @@ export class AgentSession {
 			return;
 		}
 		this._pausedResumable = false;
-		await this._runAgentContinuation();
+		// Deliver the paused backlog together; once its first message enters the transcript,
+		// restore the configured policy for steering submitted during the resumed run.
+		if (this._steeringMessages.length === 0) {
+			await this._runAgentContinuation();
+			return;
+		}
+		const steeringMode = this.agent.steeringMode;
+		this.agent.steeringMode = "all";
+		const unsubscribe = this.agent.subscribe((event) => {
+			if (event.type === "message_start" && event.message.role === "user") {
+				this.agent.steeringMode = steeringMode;
+				unsubscribe();
+			}
+		});
+		try {
+			await this._runAgentContinuation();
+		} finally {
+			this.agent.steeringMode = steeringMode;
+			unsubscribe();
+		}
 	}
 
 	/**

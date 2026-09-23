@@ -3,7 +3,7 @@ import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } from "@ear
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
-import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "./harness.ts";
+import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 const echoTool: AgentTool = {
 	name: "echo",
@@ -160,6 +160,37 @@ describe("AgentSession pause at turn boundary", () => {
 		expect(harness.getPendingResponseCount()).toBe(0);
 		expect(getUserTexts(harness)).toEqual(["start", "steer msg"]);
 		expect(getAssistantTexts(harness)).toContain("done");
+	});
+
+	it("injects all steering messages queued during a pause in FIFO order before the first resumed request (fixes #47)", async () => {
+		const harness = await createHarness({ tools: [echoTool] });
+		harnesses.push(harness);
+		const requests: string[][] = [];
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("echo", { text: "hello" }), { stopReason: "toolUse" }),
+			(context) => {
+				expect(harness.session.steeringMode).toBe("one-at-a-time");
+				requests.push(
+					context.messages.flatMap((message) => (message.role === "user" ? [getMessageText(message)] : [])),
+				);
+				return fauxAssistantMessage("done");
+			},
+			fauxAssistantMessage("unexpected extra request"),
+		]);
+
+		const disarm = armPauseOnToolStart(harness);
+		await harness.session.prompt("start");
+		disarm();
+		await harness.session.steer("first");
+		await harness.session.steer("second");
+		await harness.session.steer("third");
+
+		await harness.session.resumePaused();
+
+		expect(requests).toEqual([["start", "first", "second", "third"]]);
+		expect(getUserTexts(harness)).toEqual(["start", "first", "second", "third"]);
+		expect(harness.getPendingResponseCount()).toBe(1);
+		expect(harness.session.steeringMode).toBe("one-at-a-time");
 	});
 
 	it("lets a naturally finishing text-only turn ignore the pause request", async () => {
