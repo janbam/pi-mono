@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => {
@@ -52,7 +53,8 @@ describe("Node SEA extension loading", () => {
 		expect(state.jitiModuleLoads).toBe(0);
 		expect(state.virtualModulesLoads).toBe(0);
 
-		const result = await loadExtensions(["/extension.ts"], "/");
+		// Canonical path resolution precedes the mocked importer, so supply a file that exists.
+		const result = await loadExtensions([fileURLToPath(import.meta.url)], "/");
 
 		expect(result.errors).toEqual([]);
 		expect(state.jitiModuleLoads).toBe(1);
