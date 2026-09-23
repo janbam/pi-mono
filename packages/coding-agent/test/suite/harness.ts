@@ -61,6 +61,7 @@ export function getAssistantTexts(harness: Harness): string[] {
 }
 
 export interface HarnessOptions {
+	noCwd?: boolean;
 	models?: FauxModelDefinition[];
 	settings?: Partial<Settings>;
 	tools?: AgentTool[];
@@ -184,6 +185,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		sessionManager,
 		settingsManager,
 		cwd: tempDir,
+		noCwd: options.noCwd,
 		modelRuntime: getModelRuntime(modelRegistry),
 		resourceLoader,
 		baseToolsOverride: toolMap,

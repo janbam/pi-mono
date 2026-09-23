@@ -63,6 +63,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	tools?: string[];
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
+	noCwd?: CreateAgentSessionOptions["noCwd"];
 	customTools?: ToolDefinition[];
 }
 
@@ -217,6 +218,7 @@ export async function createAgentSessionFromServices(
 		tools: options.tools,
 		excludeTools: options.excludeTools,
 		noTools: options.noTools,
+		noCwd: options.noCwd,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
 		cacheWarmingOverride: options.cacheWarmingOverride,

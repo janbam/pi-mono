@@ -24,6 +24,8 @@ export interface BuildSystemPromptOptions {
 	sections?: Record<string, string>;
 	/** Working directory. */
 	cwd: string;
+	/** Omit the working-directory section without changing the actual working directory. */
+	noCwd?: boolean;
 	/** Pre-loaded context files. */
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
@@ -65,6 +67,7 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 		appendSystemPrompt: input.appendSystemPrompt ?? "",
 		sections: { ...(input.sections ?? {}) },
 		cwd: input.cwd,
+		noCwd: input.noCwd,
 		contextFiles: (input.contextFiles ?? []).map((file) => ({ ...file })),
 		skills: (input.skills ?? []).map((skill) => ({ ...skill })),
 	};
@@ -133,6 +136,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		appendSystemPrompt,
 		sections: customSections,
 		cwd,
+		noCwd,
 		contextFiles,
 		skills,
 	} = options;
@@ -165,8 +169,10 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		const skillsPrompt = formatSkillsForPrompt(skills, skillFileReadTool).trim();
 		if (skillsPrompt) promptSections.skills = skillsPrompt;
 	}
-	promptSections.cwd = cwd.replace(/\\/g, "/");
+	// Keep cwd available for tools and discovery while hiding only its prompt section.
+	if (!noCwd) promptSections.cwd = cwd.replace(/\\/g, "/");
 	for (const [name, content] of Object.entries(customSections)) {
+		if (noCwd && name === "cwd") continue;
 		if (content) promptSections[name] = content;
 	}
 
