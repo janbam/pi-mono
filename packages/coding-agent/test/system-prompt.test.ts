@@ -69,7 +69,9 @@ describe("buildSystemPrompt", () => {
 				cwd: "/tmp",
 			});
 
-			expect(prompt).toContain("<addendum>\nAdditional instructions.\n</addendum>");
+			// Appended instructions follow the preceding section after a blank line, without tag framing.
+			expect(prompt.startsWith("You are Exact.\n\nAdditional instructions.\n\n<project_context>")).toBe(true);
+			expect(prompt).not.toContain("addendum>");
 			expect(prompt).toContain(
 				'<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="/tmp/AGENTS.md">',
 			);
