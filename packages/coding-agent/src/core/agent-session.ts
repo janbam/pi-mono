@@ -709,23 +709,7 @@ export class AgentSession {
 			});
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.({ ...turn, context }, signal);
 			const nextContext = previousSnapshot?.context ?? context;
-			const runOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
-			// JBMOD: a run started without before_agent_start (a triggered custom message) has no
-			// per-run sections. Keep the extension sections the model already has; only a
-			// before_agent_start pass may change or remove them.
-			const sections = this._runSystemPromptOptions
-				? runOptions.sections
-				: {
-						...extensionSectionsFromTranscript(getCurrentSystemMessage(nextContext.messages)?.sections ?? {}),
-						...runOptions.sections,
-					};
-			const options = normalizeBuildSystemPromptOptions({
-				...runOptions,
-				sections,
-				selectedTools: this.getActiveToolNames(),
-				toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
-				toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
-			});
+			const options = this._resolveTurnPromptOptions(nextContext.messages);
 			const updateMessage = this._preparePromptAndToolLoadout(options, nextContext.messages);
 			// Keep session.systemPrompt and ctx.getSystemPrompt() in step with what the provider sees.
 			this._runSystemPromptOptions = options;
@@ -743,6 +727,34 @@ export class AgentSession {
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
 		};
+	}
+
+	/**
+	 * Prompt options for a request that no `before_agent_start` pass prepared: a follow-up turn
+	 * of a running run, or the first request of a triggered custom-message run. Uses the run's
+	 * options when the run has them, else base options; the live tool loadout always wins.
+	 *
+	 * @param messages Transcript the request extends; its current system message supplies the
+	 *   extension sections to keep when the run has no per-run options.
+	 */
+	private _resolveTurnPromptOptions(messages: AgentMessage[]): NormalizedBuildSystemPromptOptions {
+		const runOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+		// JBMOD: a run started without before_agent_start (a triggered custom message) has no
+		// per-run sections. Keep the extension sections the model already has; only a
+		// before_agent_start pass may change or remove them.
+		const sections = this._runSystemPromptOptions
+			? runOptions.sections
+			: {
+					...extensionSectionsFromTranscript(getCurrentSystemMessage(messages)?.sections ?? {}),
+					...runOptions.sections,
+				};
+		return normalizeBuildSystemPromptOptions({
+			...runOptions,
+			sections,
+			selectedTools: this.getActiveToolNames(),
+			toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
+			toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
+		});
 	}
 
 	// =========================================================================
@@ -2316,16 +2328,12 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
-			// A triggered turn continues the conversation like a new prompt, so it supersedes a held pause.
+			// Defer a run requested during agent_settled dispatch; the prompt is prepared when it starts.
 			if (this._isEmittingAgentSettled) {
-				this._deferredSettledActions.push(async () => {
-					this._discardHeldPause();
-					await this._runAgentPrompt(appMessage);
-				});
+				this._deferredSettledActions.push(() => this._runTriggeredTurn(appMessage));
 				return;
 			}
-			this._discardHeldPause();
-			await this._runAgentPrompt(appMessage);
+			await this._runTriggeredTurn(appMessage);
 		} else if (this.isStreaming) {
 			// Appending now would put the message between an assistant tool call and its
 			// result, which providers that validate message order reject on replay. Defer
@@ -2453,6 +2461,21 @@ export class AgentSession {
 		if (this._isBeforeSettle) this._abortDuringBeforeSettle = true;
 		this.agent.abort();
 		await this.waitForIdle();
+	}
+
+	/**
+	 * Start a run whose first message is a triggered custom message. No `before_agent_start`
+	 * pass runs, so the prompt and tool loadout are prepared here like a next-turn refresh;
+	 * otherwise the first request of a path without a system message would carry no prompt.
+	 */
+	private async _runTriggeredTurn(message: CustomMessage): Promise<void> {
+		// A triggered turn continues the conversation like a new prompt, so it supersedes a held pause.
+		this._discardHeldPause();
+		// Patch the prompt the current path declares; an unchanged prompt adds no system message.
+		const options = this._resolveTurnPromptOptions(this.agent.state.messages);
+		const updateMessage = this._preparePromptAndToolLoadout(options);
+		this._runSystemPromptOptions = options;
+		await this._runAgentPrompt(updateMessage ? [updateMessage, message] : message);
 	}
 
 	/** Drop a held pause together with the per-run prompt state it kept alive for resume. */
