@@ -148,6 +148,36 @@ describe("system prompt updates", () => {
 		}
 	});
 
+	// janbam/pi-mono#48
+	test("a triggered run on a path without a system message declares the full prompt on its first request", async () => {
+		const harness = await createHarness();
+		try {
+			const requests: TranscriptContext[] = [];
+			harness.setResponses([
+				(providerContext) => {
+					requests.push(providerContext);
+					return fauxAssistantMessage("done");
+				},
+			]);
+			// A fresh session has no system message, like a branch navigated to before the first one.
+			await harness.session.sendCustomMessage(
+				{ customType: "trigger", content: "continue", display: false },
+				{ triggerTurn: true },
+			);
+			expect(requests).toHaveLength(1);
+
+			// The request carries the whole prompt and tools in one system message ahead of the trigger.
+			const head = requests[0]?.messages[0];
+			if (head?.role !== "system") throw new Error("expected system message");
+			expect(Object.keys(head.sections ?? {})).toEqual(["preamble", "tools", "rules", "cwd"]);
+			expect(head.toolsAdded?.map((tool) => tool.name)).toEqual(["read", "bash", "edit", "write"]);
+			expect(getSystemMessageText(head)).toBe(harness.session.systemPrompt);
+			expect(harness.session.messages.map((message) => message.role)).toEqual(["system", "custom", "assistant"]);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	test("keeps the preamble untagged and replaces it like any section", () => {
 		const previous = buildSystemPromptSections({ customPrompt: "You are A.", cwd: "/tmp" });
 		const current = buildSystemPromptSections({ customPrompt: "You are B.", cwd: "/tmp" });

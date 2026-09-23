@@ -185,10 +185,12 @@ Upstream behavior: runs started by `pi.sendMessage(..., { triggerTurn: true })` 
 
 Fork behavior: when a run has no per-run options, the refresh seeds `sections` with the extension-owned sections the model currently has, recovered from the transcript. Built-in sections (`preamble`, `tools`, `rules`, `addendum`, `project_context`, `skills`, `cwd`) are still rebuilt from live state, including when an extension overrode one of those names through `sections`. Such an override is not kept in triggered runs; the extension docs tell authors to use their own names. Only a `before_agent_start` pass may change or remove an extension section. Sections with invalid names or text that is not the builder's `<name>\n...\n</name>` wrapping cannot be rebuilt byte-identically and are dropped as before.
 
+The triggered run's first request is prepared the same way. Upstream sends it unprepared, so on a path without a system message (a fresh session, or a branch navigated to before the first one) it carries no system prompt at all, only the agent loop's tool delta. The fork patches the prompt before that request; a path whose prompt already matches gets no new system message ([#48](https://github.com/janbam/pi-mono/issues/48)).
+
 Implementation:
 
 - Section recovery: `packages/coding-agent/src/core/system-prompt.ts` (`extensionSectionsFromTranscript`)
-- Seeding in the next-turn refresh: `packages/coding-agent/src/core/agent-session.ts` (`_installAgentNextTurnRefresh`)
+- Option resolution shared by the next-turn refresh and the triggered first request: `packages/coding-agent/src/core/agent-session.ts` (`_resolveTurnPromptOptions`, used by `_installAgentNextTurnRefresh` and `_runTriggeredTurn`)
 - Tests: `packages/coding-agent/test/system-prompt-updates.test.ts`
 - Extension docs: `packages/coding-agent/docs/extensions.md` (section lifecycle paragraph under Events and concurrency)
 
