@@ -49,6 +49,8 @@ export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 export type SystemPromptSections = Record<string, string>;
 
 const SYSTEM_PROMPT_SECTION_NAME = /^[a-z][a-z0-9_-]*$/;
+/** Section names {@link buildSystemPromptSections} derives itself; every other name comes from `sections`. */
+const BUILT_IN_SECTION_NAMES = new Set(["preamble", "tools", "rules", "addendum", "project_context", "skills", "cwd"]);
 /** Normalize prompt input into the mutable, collection-complete shape exposed to extensions. */
 export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOptions): NormalizedBuildSystemPromptOptions {
 	return {
@@ -190,6 +192,28 @@ export function buildSystemPromptState(input: BuildSystemPromptOptions): {
 /** Build the system prompt text, rendered exactly as the transcript's system message replays it. */
 export function buildSystemPrompt(input: BuildSystemPromptOptions): string {
 	return getSystemMessageText({ role: "system", ...buildSystemPromptState(input), timestamp: 0 });
+}
+
+/**
+ * JBMOD: recover the `sections` input behind the extension-owned sections the model currently
+ * has, so a request prepared without a `before_agent_start` pass can rebuild them unchanged.
+ *
+ * `current` is `getCurrentSystemMessage(...).sections`. Built-in sections are skipped because
+ * they are always rebuilt from live state. A section with an invalid name, or whose text is
+ * not the builder's `<name>\n...\n</name>` wrapping, cannot be rebuilt byte-identically and
+ * is skipped too.
+ */
+export function extensionSectionsFromTranscript(current: Record<string, string | null>): Record<string, string> {
+	const sections: Record<string, string> = {};
+	for (const [name, text] of Object.entries(current)) {
+		if (text === null || BUILT_IN_SECTION_NAMES.has(name) || !SYSTEM_PROMPT_SECTION_NAME.test(name)) continue;
+		const open = `<${name}>\n`;
+		const close = `\n</${name}>`;
+		if (text.startsWith(open) && text.endsWith(close) && text.length >= open.length + close.length) {
+			sections[name] = text.slice(open.length, -close.length);
+		}
+	}
+	return sections;
 }
 
 /**

@@ -142,6 +142,7 @@ import {
 	buildSystemPrompt,
 	buildSystemPromptSections,
 	diffSystemPromptSections,
+	extensionSectionsFromTranscript,
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
@@ -709,8 +710,18 @@ export class AgentSession {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.({ ...turn, context }, signal);
 			const nextContext = previousSnapshot?.context ?? context;
 			const runOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+			// JBMOD: a run started without before_agent_start (a triggered custom message) has no
+			// per-run sections. Keep the extension sections the model already has; only a
+			// before_agent_start pass may change or remove them.
+			const sections = this._runSystemPromptOptions
+				? runOptions.sections
+				: {
+						...extensionSectionsFromTranscript(getCurrentSystemMessage(nextContext.messages)?.sections ?? {}),
+						...runOptions.sections,
+					};
 			const options = normalizeBuildSystemPromptOptions({
 				...runOptions,
+				sections,
 				selectedTools: this.getActiveToolNames(),
 				toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
 				toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
