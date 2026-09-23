@@ -3,9 +3,13 @@
  *
  * Wraps global fetch and appends one JSON line per outgoing HTTP request,
  * capturing the exact request body sent to the provider (URL, method,
- * redacted headers, body) plus response status and duration. All provider
- * SDKs ultimately call global fetch, so this sees the wire-level payload
- * after provider-specific transformation.
+ * redacted headers, body) plus response status and duration. All fetch-based
+ * provider SDKs ultimately call global fetch, so this sees the wire-level
+ * payload after provider-specific transformation.
+ *
+ * Also wraps global WebSocket and appends one line per outgoing message, because
+ * WebSocket transports (e.g. OpenAI Codex's default `auto` transport) send the
+ * request body as a socket message and never touch fetch.
  *
  * Limitation: Amazon Bedrock uses the AWS SDK's node:http transport and is
  * not captured. Sensitive headers are redacted before writing.
@@ -17,6 +21,7 @@ import { resolve } from "node:path";
 /** One JSONL record describing an outgoing HTTP request and its outcome. */
 export interface ApiRequestLogEntry {
 	timestamp: string;
+	/** HTTP method, or "WS" for an outgoing WebSocket message. */
 	method: string;
 	url: string;
 	/** Header names lowercased; credential-bearing values replaced with "<redacted>". */
@@ -27,8 +32,12 @@ export interface ApiRequestLogEntry {
 	bodyEncoding?: "json" | "text" | "base64" | "opaque";
 	responseStatus?: number;
 	error?: string;
-	durationMs: number;
+	/** Time until the HTTP response settled. Absent for WebSocket messages, which have no per-message response. */
+	durationMs?: number;
 }
+
+/** A captured request body plus how it was encoded for the log. */
+type CapturedBody = { body?: unknown; bodyEncoding?: ApiRequestLogEntry["bodyEncoding"] };
 
 const REDACTED = "<redacted>";
 const SENSITIVE_HEADER_PATTERN = /authorization|cookie|api-key|token|secret/i;
@@ -68,9 +77,7 @@ function headersToObject(headers: HeadersLike | undefined): Record<string, strin
  * Read an `init.body` value without consuming or mutating it.
  * Returns a description suitable for logging; opaque bodies are named by type.
  */
-async function captureInitBody(
-	raw: unknown,
-): Promise<{ body?: unknown; bodyEncoding?: ApiRequestLogEntry["bodyEncoding"] }> {
+async function captureInitBody(raw: unknown): Promise<CapturedBody> {
 	if (raw === undefined || raw === null) return {};
 
 	if (typeof raw === "string" || raw instanceof URLSearchParams) {
@@ -107,6 +114,16 @@ async function captureInitBody(
 	return { body: `opaque: ${typeof raw}`, bodyEncoding: "opaque" };
 }
 
+/** Promote text bodies that are valid JSON so the log line stays inspectable; other bodies pass through. */
+function promoteJsonBody(captured: CapturedBody): CapturedBody {
+	if (captured.bodyEncoding !== "text" || typeof captured.body !== "string") return captured;
+	try {
+		return { body: JSON.parse(captured.body), bodyEncoding: "json" };
+	} catch {
+		return captured;
+	}
+}
+
 /**
  * Build a fetch function that logs every request through `log` before delegating to `base`.
  * The captured fetch resolves/rejects exactly like `base`; logging never changes behavior.
@@ -129,10 +146,7 @@ export function createRequestLoggingFetch(
 		const requestClone = isRequest && init?.body === undefined ? input.clone() : undefined;
 		const fromInit = init?.body !== undefined ? await captureInitBody(init.body) : {};
 
-		const readLoggedBody = async (): Promise<{
-			body?: unknown;
-			bodyEncoding?: ApiRequestLogEntry["bodyEncoding"];
-		}> => {
+		const readLoggedBody = async (): Promise<CapturedBody> => {
 			if (!requestClone) return fromInit;
 			try {
 				return { body: await requestClone.text(), bodyEncoding: "text" };
@@ -142,25 +156,14 @@ export function createRequestLoggingFetch(
 		};
 
 		const logAttempt = async (responseStatus: number | undefined, error: string | undefined): Promise<void> => {
-			const { body, bodyEncoding } = await readLoggedBody();
-			// Promote text bodies that are valid JSON so the log line stays inspectable.
-			let logBody = body;
-			let logEncoding = bodyEncoding;
-			if (bodyEncoding === "text" && typeof body === "string") {
-				try {
-					logBody = JSON.parse(body);
-					logEncoding = "json";
-				} catch {
-					// keep raw text
-				}
-			}
+			const { body, bodyEncoding } = promoteJsonBody(await readLoggedBody());
 			log({
 				timestamp: new Date().toISOString(),
 				method,
 				url,
 				headers,
-				body: logBody,
-				bodyEncoding: logEncoding,
+				body,
+				bodyEncoding,
 				responseStatus,
 				error,
 				durationMs: Date.now() - startedAt,
@@ -181,14 +184,66 @@ export function createRequestLoggingFetch(
 	return wrapped as typeof globalThis.fetch;
 }
 
+/**
+ * Build a WebSocket constructor that logs every outgoing message through `log` before delegating to `base`.
+ * Each `send()` becomes one entry with method "WS", the socket URL, the redacted handshake headers, and the
+ * message payload. Handshake, incoming frames, and close are not logged. Behaves exactly like `base` otherwise.
+ */
+export function createRequestLoggingWebSocket(
+	base: typeof globalThis.WebSocket,
+	log: (entry: ApiRequestLogEntry) => void,
+): typeof globalThis.WebSocket {
+	return class RequestLoggingWebSocket extends base {
+		readonly #logHeaders: Record<string, string>;
+
+		constructor(url: string | URL, protocols?: string | string[] | WebSocketInit) {
+			super(url, protocols);
+			// Only the init-object form carries handshake headers; a protocol list has none.
+			const init = typeof protocols === "object" && !Array.isArray(protocols) ? protocols : undefined;
+			this.#logHeaders = redactHeaders(headersToObject(init?.headers as HeadersLike | undefined));
+		}
+
+		override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+			// Snapshot the payload before sending: non-Blob bodies are decoded synchronously, so a
+			// caller reusing its buffer after send() cannot alter what gets logged.
+			const captured = captureInitBody(data);
+			let error: string | undefined;
+			try {
+				super.send(data);
+			} catch (sendError: unknown) {
+				error = sendError instanceof Error ? sendError.message : String(sendError);
+				throw sendError;
+			} finally {
+				// Log without blocking or altering the send; a failed send is logged with its error and rethrown.
+				void captured
+					.then((body) => {
+						const { body: logBody, bodyEncoding } = promoteJsonBody(body);
+						log({
+							timestamp: new Date().toISOString(),
+							method: "WS",
+							url: this.url,
+							headers: this.#logHeaders,
+							body: logBody,
+							bodyEncoding,
+							error,
+						});
+					})
+					.catch(() => {});
+			}
+		}
+	};
+}
+
 let loggingInstalled = false;
 
 /**
- * Install the global fetch logging wrapper and append entries to `logFile` (JSONL).
+ * Install the global fetch and WebSocket logging wrappers and append entries to `logFile` (JSONL).
  * Must be called after `configureHttpDispatcher()` has run at least once so the
  * wrapper sits on top of undici's installed fetch; later dispatcher
  * reconfigurations keep working because undici fetch resolves the global
- * dispatcher dynamically. Idempotent: only the first call installs the wrapper.
+ * dispatcher dynamically. WebSocket users must resolve `globalThis.WebSocket`
+ * at connect time (as the Codex provider does) to be captured. Idempotent: only
+ * the first call installs the wrappers.
  */
 export function enableApiRequestLogging(logFile: string): void {
 	if (loggingInstalled) return;
@@ -210,4 +265,8 @@ export function enableApiRequestLogging(logFile: string): void {
 	};
 
 	globalThis.fetch = createRequestLoggingFetch(globalThis.fetch, writeEntry);
+	// Runtimes without a global WebSocket have no socket transport to capture.
+	if (typeof globalThis.WebSocket === "function") {
+		globalThis.WebSocket = createRequestLoggingWebSocket(globalThis.WebSocket, writeEntry);
+	}
 }

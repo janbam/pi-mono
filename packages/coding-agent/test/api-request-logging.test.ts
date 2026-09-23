@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	type ApiRequestLogEntry,
 	createRequestLoggingFetch,
+	createRequestLoggingWebSocket,
 	enableApiRequestLogging,
 } from "../src/core/api-request-logging.ts";
 
@@ -169,24 +170,97 @@ describe("createRequestLoggingFetch", () => {
 	});
 });
 
+/** Minimal in-memory socket standing in for a connected WebSocket; records what reaches the base send(). */
+class FakeSocket {
+	readonly url: string;
+	readonly sent: unknown[] = [];
+	constructor(url: string | URL) {
+		this.url = String(url);
+	}
+	send(data: unknown): void {
+		if (data === "fail") throw new Error("socket not open");
+		this.sent.push(data);
+	}
+}
+const fakeSocketBase = FakeSocket as unknown as typeof globalThis.WebSocket;
+
+describe("createRequestLoggingWebSocket", () => {
+	test("logs each sent message with url, redacted handshake headers, and JSON body", async () => {
+		const entries: ApiRequestLogEntry[] = [];
+		const LoggingSocket = createRequestLoggingWebSocket(fakeSocketBase, capturingLog(entries));
+
+		const socket = new LoggingSocket("wss://chatgpt.com/backend-api/codex/responses", {
+			headers: { Authorization: "Bearer tok", "OpenAI-Beta": "responses_websockets=2026-02-06" },
+		});
+		const payload = JSON.stringify({ type: "response.create", model: "gpt-5", input: [] });
+		socket.send(payload);
+
+		// The base socket must still receive the untouched payload.
+		expect((socket as unknown as FakeSocket).sent).toEqual([payload]);
+		await vi.waitFor(() => expect(entries).toHaveLength(1));
+		expect(entries[0]).toMatchObject({
+			method: "WS",
+			url: "wss://chatgpt.com/backend-api/codex/responses",
+			headers: { authorization: "<redacted>", "openai-beta": "responses_websockets=2026-02-06" },
+			body: { type: "response.create", model: "gpt-5", input: [] },
+			bodyEncoding: "json",
+		});
+		expect(entries[0].durationMs).toBeUndefined();
+	});
+
+	test("logs a failed send with its error and rethrows", async () => {
+		const entries: ApiRequestLogEntry[] = [];
+		const LoggingSocket = createRequestLoggingWebSocket(fakeSocketBase, capturingLog(entries));
+		const socket = new LoggingSocket("wss://provider.example.com", ["proto"]);
+
+		expect(() => socket.send("fail")).toThrow("socket not open");
+
+		await vi.waitFor(() => expect(entries).toHaveLength(1));
+		expect(entries[0]).toMatchObject({ method: "WS", headers: {}, body: "fail", error: "socket not open" });
+	});
+
+	test("subclasses the runtime WebSocket without changing its behavior", async () => {
+		const entries: ApiRequestLogEntry[] = [];
+		const LoggingSocket = createRequestLoggingWebSocket(globalThis.WebSocket, capturingLog(entries));
+
+		// Port 9 on loopback never completes a handshake, so the real socket stays CONNECTING and
+		// its native send() must still throw through the wrapper.
+		const socket = new LoggingSocket("ws://127.0.0.1:9", { headers: { "x-api-key": "k" } });
+		socket.addEventListener("error", () => {});
+		expect(socket).toBeInstanceOf(globalThis.WebSocket);
+		expect(socket.readyState).toBe(globalThis.WebSocket.CONNECTING);
+		expect(() => socket.send("{}")).toThrow();
+		socket.close();
+
+		await vi.waitFor(() => expect(entries).toHaveLength(1));
+		expect(entries[0].url).toBe("ws://127.0.0.1:9/");
+		expect(entries[0].headers).toEqual({ "x-api-key": "<redacted>" });
+		expect(entries[0].error).toBeDefined();
+	});
+});
+
 describe("enableApiRequestLogging", () => {
 	let originalFetch: typeof globalThis.fetch;
+	let originalWebSocket: typeof globalThis.WebSocket;
 	let tempDir: string;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
+		originalWebSocket = globalThis.WebSocket;
 		tempDir = mkdtempSync(join(tmpdir(), "pi-api-log-"));
 	});
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch;
+		globalThis.WebSocket = originalWebSocket;
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	test("appends JSONL entries to the log file through global fetch", async () => {
+	test("appends JSONL entries to the log file through global fetch and WebSocket", async () => {
 		const logFile = join(tempDir, "requests.jsonl");
-		// Stub fetch first so enable() wraps the stub and no real request leaves the machine.
+		// Stub fetch and WebSocket first so enable() wraps the stubs and nothing leaves the machine.
 		globalThis.fetch = (async () => new Response("ok", { status: 200 })) as typeof globalThis.fetch;
+		globalThis.WebSocket = fakeSocketBase;
 		enableApiRequestLogging(logFile);
 
 		await globalThis.fetch("https://provider.example.com/v1/chat", {
@@ -203,6 +277,13 @@ describe("enableApiRequestLogging", () => {
 		expect(entry.url).toBe("https://provider.example.com/v1/chat");
 		expect(entry.headers.authorization).toBe("<redacted>");
 		expect(entry.body).toEqual({ model: "m" });
+
+		// WebSocket transports (Codex `auto`) bypass fetch; their messages must land in the same file.
+		new globalThis.WebSocket("wss://provider.example.com/ws").send(JSON.stringify({ type: "response.create" }));
+		await vi.waitFor(() => expect(readFileSync(logFile, "utf8").trim().split("\n")).toHaveLength(2));
+		const wsEntry = JSON.parse(readFileSync(logFile, "utf8").trim().split("\n")[1]) as ApiRequestLogEntry;
+		expect(wsEntry).toMatchObject({ method: "WS", url: "wss://provider.example.com/ws" });
+		expect(wsEntry.body).toEqual({ type: "response.create" });
 	});
 
 	test("a second enable call does not wrap fetch again", async () => {

@@ -189,7 +189,7 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
 - `-kw`, `--keep-cache-warm`<br>
   Keeps an eligible prompt cache warm while running and idle for this process only. See [Cache Warming](settings.md#cache-warming).
 - `--log-api-requests <file>`<br>
-  Writes outgoing fetch-based provider requests and responses as JSONL for debugging. Headers are redacted, but request bodies are included. Amazon Bedrock's node:http transport is not captured.
+  Writes outgoing provider requests as JSONL for debugging: HTTP requests with response status and duration, and outgoing WebSocket messages (`method: "WS"`, e.g. OpenAI Codex's default transport). Headers are redacted, but request bodies are included. Amazon Bedrock's node:http transport is not captured.
 - `--tui-mode <mode>`<br>
   Uses `regular` or `fullscreen` terminal mode.
 - `--verbose`<br>
