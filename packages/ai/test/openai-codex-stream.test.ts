@@ -899,6 +899,54 @@ describe("openai-codex streaming", () => {
 		expect(requestedToolChoice).toBe("required");
 	});
 
+	it("sends system prompts verbatim as instructions and omits the field for empty or missing prompts", async () => {
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const sse = buildSSEPayload({ status: "completed" });
+		const requestBodies: Array<Record<string, unknown> | null> = [];
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL, init?: RequestInit) => {
+				requestBodies.push(decodeCodexRequestBody(init?.body));
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode(sse));
+							controller.close();
+						},
+					}),
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			}),
+		);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		// Empty and missing prompts must drop the field (no placeholder); a real prompt must pass through unchanged.
+		for (const systemPrompt of ["", undefined, "Be terse."]) {
+			await streamOpenAICodexResponses(
+				model,
+				normalizeContext({ systemPrompt, messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
+				{ apiKey: token, transport: "sse" },
+			).result();
+		}
+
+		// Decoded JSON cannot hold undefined values, so undefined here means the key was absent on the wire.
+		expect(requestBodies.map((body) => body?.instructions)).toEqual([undefined, undefined, "Be terse."]);
+	});
+
 	it("sets Codex strict mode explicitly and honors constrained sampling", async () => {
 		const token = mockToken();
 		const encoder = new TextEncoder();
