@@ -204,6 +204,7 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 
 ## Smaller fork additions
 
+- GitHub Copilot's Claude Opus 5.5 catalog entry keeps `off` and `minimal` thinking unavailable even after models.dev lists the model. The generator applies the restriction to both upstream and fallback entries: `packages/ai/scripts/generate-models.ts` (`GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES`), tested in `packages/ai/test/github-copilot-anthropic.test.ts`.
 - `--log-api-requests <file>` writes every outgoing provider request (URL, method, redacted headers, body, status, duration) as JSONL. Amazon Bedrock's node:http transport is not covered. `packages/coding-agent/src/core/api-request-logging.ts`, test `test/api-request-logging.test.ts`.
 - `/export <file>.md` exports the visible conversation as Markdown with thinking omitted and tools rendered like interactive mode. `packages/coding-agent/src/core/session-export.ts` (`exportSessionToMarkdown`), `AgentSession.exportToMarkdown()`, test `test/export-markdown.test.ts`.
 - Interactive mode prints a turn-usage line (uncached input, output, cache read, cache write, cost) after every foreground run, including tool-reported usage and excluding compaction. `interactive-mode.ts` (`showTurnUsage`), test `test/interactive-mode-turn-usage.test.ts`.
