@@ -1514,6 +1514,8 @@ export class SessionManager {
 	 * @param content Message content (string or TextContent/ImageContent array)
 	 * @param display Whether to show in TUI (true = styled display, false = hidden)
 	 * @param details Optional extension-specific metadata (not sent to LLM)
+	 * @param timestamp Creation time in ms; defaults to now. JBMOD: pass the in-memory message's time so
+	 * re-projecting the entry reproduces that message exactly (cache warming compares by value).
 	 * @returns Entry id
 	 */
 	appendCustomMessageEntry<T = unknown>(
@@ -1521,6 +1523,7 @@ export class SessionManager {
 		content: string | (TextContent | ImageContent)[],
 		display: boolean,
 		details?: T,
+		timestamp = Date.now(),
 	): string {
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
@@ -1530,7 +1533,7 @@ export class SessionManager {
 			details,
 			id: generateId(this.byId),
 			parentId: this.leafId,
-			timestamp: new Date().toISOString(),
+			timestamp: new Date(timestamp).toISOString(),
 		};
 		this._appendEntry(entry);
 		return entry.id;
