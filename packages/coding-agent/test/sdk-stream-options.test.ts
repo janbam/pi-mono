@@ -184,6 +184,57 @@ describe("createAgentSession stream options", () => {
 		}
 	});
 
+	// JBMOD regression: extension boundaries (e.g. any turn_end handler) refresh the context after the
+	// request. The refresh rebuilds the branch summary as a new object and re-projected the triggered
+	// custom message with its persistence time; both stopped warming after every pi-context compaction.
+	it("keeps warming across context refreshes that rebuild equal messages", async () => {
+		const fixture = await createCacheWarmingSession();
+		try {
+			await fixture.session.prompt("one");
+			const checkpoint = fixture.sessionManager.getLeafId() as string;
+			await fixture.session.prompt("two");
+			const summaryId = fixture.sessionManager.branchWithSummary(checkpoint, "summary of two");
+			fixture.sessionManager.branch(checkpoint);
+			await fixture.session.navigateTree(summaryId, { summarize: false });
+
+			// Advance the clock on every read, so a persistence stamp taken separately from the sent
+			// message's time always differs, not only when the two land in different milliseconds.
+			let clock = Date.now();
+			const tickingNow = vi.spyOn(Date, "now").mockImplementation(() => {
+				clock += 1_000;
+				return clock;
+			});
+			try {
+				await fixture.session.sendCustomMessage(
+					{ customType: "continuation", content: "continue", display: false },
+					{ triggerTurn: true, deliverAs: "followUp" },
+				);
+			} finally {
+				tickingNow.mockRestore();
+			}
+
+			const sent = fixture.session.agent.state.messages.find((message) => message.role === "custom");
+			const persisted = fixture.sessionManager.getBranch().find((entry) => entry.type === "custom_message");
+			expect(persisted?.timestamp).toBe(new Date(sent?.timestamp ?? 0).toISOString());
+
+			const summaryIndex = fixture.session.agent.state.messages.findIndex(
+				(message) => message.role === "branchSummary",
+			);
+			const requestSummary = fixture.session.agent.state.messages[summaryIndex];
+			fixture.session.refreshContext();
+			expect(fixture.session.agent.state.messages[summaryIndex]).not.toBe(requestSummary);
+			expect(fixture.session.cacheWarmingStatus?.state).toBe("scheduled");
+
+			// Value comparison must still catch a real change to a message the request sent.
+			const messages = [...fixture.session.agent.state.messages];
+			messages[summaryIndex] = { ...requestSummary, summary: "changed summary" } as typeof requestSummary;
+			fixture.session.agent.state.messages = messages;
+			expect(fixture.session.cacheWarmingStatus?.reason).toBe("conversation context changed");
+		} finally {
+			fixture.dispose();
+		}
+	});
+
 	// JBMOD: upstream only warms requests captured in-process; the fork resumes the transcript's
 	// last request. The rebuild must reproduce the sent request, or its first refresh misses the cache.
 	it("resumes warming a resumed transcript with the request it last sent", async () => {

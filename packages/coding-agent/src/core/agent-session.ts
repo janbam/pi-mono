@@ -971,12 +971,14 @@ export class AgentSession {
 			let entryId: string | undefined;
 			// Check if this is a custom message from extensions
 			if (event.message.role === "custom") {
-				// Persist as CustomMessageEntry
+				// Persist as CustomMessageEntry with the sent message's own time, so context refreshes
+				// re-project a value-equal message instead of one stamped at persistence time.
 				entryId = this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
 					event.message.details,
+					event.message.timestamp,
 				);
 			} else if (
 				event.message.role === "system" ||
@@ -2356,6 +2358,7 @@ export class AgentSession {
 			appMessage.content,
 			appMessage.display,
 			appMessage.details,
+			appMessage.timestamp,
 		);
 		this._refreshFinalizedContext();
 		this._emit({ type: "message_start", message: appMessage });

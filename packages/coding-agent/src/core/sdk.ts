@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelsSimpleStreamOptions, normalizeContext } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
@@ -348,6 +349,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			},
 		};
 	};
+	/**
+	 * Staleness check for a warmed request: true while the session's model is unchanged and its
+	 * messages still extend the request's messages by value.
+	 */
 	const cacheContextIsCurrent = (requestModel: Model<any>) => {
 		const messages = agent.state.messages;
 		return () => {
@@ -357,7 +362,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				currentModel.provider === requestModel.provider &&
 				currentModel.id === requestModel.id &&
 				messages.length <= currentMessages.length &&
-				messages.every((message, index) => currentMessages[index] === message)
+				// JBMOD: identity is only the fast path. Context refreshes rebuild summary, compaction,
+				// custom, and edited messages as new but equal objects, which must not stop warming.
+				messages.every(
+					(message, index) =>
+						currentMessages[index] === message || isDeepStrictEqual(currentMessages[index], message),
+				)
 			);
 		};
 	};
