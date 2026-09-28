@@ -1,7 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { Container } from "@earendil-works/pi-tui";
 import { describe, expect, test, vi } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+import { type SessionEntry, SessionManager } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -106,47 +106,27 @@ describe("InteractiveMode compaction events", () => {
 		);
 	});
 
-	test("renders retained entries and appends the latest summary cost at the bottom", async () => {
-		const usage: Usage = {
-			input: 10,
-			output: 20,
-			cacheRead: 30,
-			cacheWrite: 40,
-			totalTokens: 100,
-			cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.065, total: 0.125 },
-		};
-		const latestCompaction: SessionEntry = {
-			type: "compaction",
-			id: "latest",
-			parentId: "previous",
-			timestamp: "2025-01-02T00:00:00Z",
-			summary: "summary",
-			firstKeptEntryId: "kept",
-			tokensBefore: 123,
-			usage,
-		};
-		const previousCompaction: SessionEntry = {
-			type: "compaction",
-			id: "previous",
-			parentId: null,
-			timestamp: "2025-01-01T00:00:00Z",
-			summary: "previous summary",
-			firstKeptEntryId: "kept",
-			tokensBefore: 100,
-			usage,
-		};
+	test("renders the latest compaction at its chronological position on resume and after compaction", async () => {
+		// Context order is [compaction, kept, later]; the transcript must show kept, compaction, later.
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage({ role: "user", content: "summarized", timestamp: 1 });
+		const keptId = sessionManager.appendMessage({ role: "user", content: "kept", timestamp: 2 });
+		const compactionId = sessionManager.appendCompaction("summary", keptId, 123);
+		const laterId = sessionManager.appendMessage({ role: "user", content: "later", timestamp: 3 });
+		expect(sessionManager.buildContextEntries().map((entry) => entry.id)).toEqual([compactionId, keptId, laterId]);
+
 		const fakeThis = {
 			isInitialized: true,
+			sessionManager,
+			buildTranscriptEntries: Reflect.get(InteractiveMode.prototype, "buildTranscriptEntries"),
 			footer: { invalidate: vi.fn() },
 			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
 			autoCompactionLoader: undefined,
 			defaultEditor: {},
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
-			sessionManager: { buildContextEntries: vi.fn().mockReturnValue([latestCompaction, previousCompaction]) },
 			renderSessionEntries: vi.fn(),
-			addMessageToChat: vi.fn(),
-			addCompactionCostNotice: vi.fn(),
+			renderProjectTrustWarningIfNeeded: vi.fn(),
 			showError: vi.fn(),
 			showStatus: vi.fn(),
 			clearStatusIndicator: vi.fn(),
@@ -154,46 +134,38 @@ describe("InteractiveMode compaction events", () => {
 			settingsManager: { getShowTerminalProgress: () => false },
 			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
 		};
+		const transcriptOrder = [keptId, compactionId, laterId];
+		const renderedIds = (call: number) =>
+			(fakeThis.renderSessionEntries.mock.calls[call][0] as SessionEntry[]).map((entry) => entry.id);
 
+		// Resume path.
+		const renderInitialMessages = Reflect.get(InteractiveMode.prototype, "renderInitialMessages") as (
+			this: typeof fakeThis,
+		) => void;
+		renderInitialMessages.call(fakeThis);
+		expect(renderedIds(0)).toEqual(transcriptOrder);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Session compacted 1 time");
+
+		// Live compaction_end path.
 		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 			this: typeof fakeThis,
 			event: {
 				type: "compaction_end";
-				reason: "manual" | "threshold" | "overflow";
-				result: { tokensBefore: number; summary: string; usage?: Usage } | undefined;
+				reason: "manual";
+				result: { tokensBefore: number; summary: string };
 				aborted: boolean;
 				willRetry: boolean;
-				errorMessage?: string;
 			},
 		) => Promise<void>;
-
 		await handleEvent.call(fakeThis, {
 			type: "compaction_end",
 			reason: "manual",
-			result: {
-				tokensBefore: 123,
-				summary: "summary",
-				usage,
-			},
+			result: { tokensBefore: 123, summary: "summary" },
 			aborted: false,
 			willRetry: false,
 		});
-
 		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
-		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
-		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
-		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
-			expect.objectContaining({
-				role: "compactionSummary",
-				tokensBefore: 123,
-				summary: "summary",
-			}),
-		);
-		expect(fakeThis.addCompactionCostNotice).toHaveBeenCalledWith({
-			type: "compaction_cost",
-			kind: "compaction",
-			usage,
-		});
+		expect(renderedIds(1)).toEqual(transcriptOrder);
 		expect(fakeThis.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
 	});
 
