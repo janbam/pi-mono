@@ -95,7 +95,7 @@ import type {
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-import { createCompactionSummaryMessage, createCustomMessage } from "../../core/messages.ts";
+import { createCustomMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -3544,26 +3544,15 @@ export class InteractiveMode {
 					);
 					this.ui.requestRender();
 				} else if (event.entry.type === "compaction") {
-					const entries = this.sessionManager.buildContextEntries();
-					if (entries[0]?.id !== event.entry.id) break;
+					// Only a compaction that became the active context boundary reshapes the transcript.
+					if (this.sessionManager.buildContextEntries()[0]?.id !== event.entry.id) break;
 					this.chatContainer.clear();
+					this.renderSessionEntries(this.buildTranscriptEntries());
+					// Later branch entries were just rendered; skip their pending entry_appended events.
 					const branch = this.sessionManager.getBranch();
 					const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
-					const entriesAfterCompaction = new Set(branch.slice(compactionIndex + 1).map((entry) => entry.id));
-					const retainedEntries = entries.slice(1);
-					this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
-					this.addMessageToChat(
-						createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp),
-					);
-					if (event.entry.usage) {
-						this.addCompactionCostNotice({
-							type: "compaction_cost",
-							kind: "compaction",
-							usage: event.entry.usage,
-						});
-					}
-					this.renderSessionEntries(retainedEntries.filter((entry) => entriesAfterCompaction.has(entry.id)));
-					for (const entryId of entriesAfterCompaction) this.entriesRenderedByBoundaryCompaction.add(entryId);
+					for (const entry of branch.slice(compactionIndex + 1))
+						this.entriesRenderedByBoundaryCompaction.add(entry.id);
 					this.footer.invalidate();
 					this.ui.requestRender();
 				}
@@ -3792,27 +3781,11 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					const entries = this.sessionManager.buildContextEntries();
-					if (entries[0]?.type !== "compaction") {
+					if (this.sessionManager.buildContextEntries()[0]?.type !== "compaction") {
 						throw new Error("Completed compaction is missing from the session context");
 					}
 					this.chatContainer.clear();
-					// The latest compaction is prepended for model context; append it below at its chronological position.
-					this.renderSessionEntries(entries.slice(1));
-					this.addMessageToChat(
-						createCompactionSummaryMessage(
-							event.result.summary,
-							event.result.tokensBefore,
-							new Date().toISOString(),
-						),
-					);
-					if (event.result.usage) {
-						this.addCompactionCostNotice({
-							type: "compaction_cost",
-							kind: "compaction",
-							usage: event.result.usage,
-						});
-					}
+					this.renderSessionEntries(this.buildTranscriptEntries());
 					this.footer.invalidate();
 				} else if (event.errorMessage) {
 					if (event.reason === "manual") {
@@ -4275,8 +4248,7 @@ export class InteractiveMode {
 	}
 
 	renderInitialMessages(): void {
-		const entries = this.sessionManager.buildContextEntries();
-		this.renderSessionEntries(entries, {
+		this.renderSessionEntries(this.buildTranscriptEntries(), {
 			updateFooter: true,
 			populateHistory: true,
 		});
@@ -4327,7 +4299,17 @@ export class InteractiveMode {
 
 	private rebuildChatFromMessages(): void {
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		this.renderSessionEntries(this.buildTranscriptEntries());
+	}
+
+	/**
+	 * Compaction-aware session entries in transcript order. buildContextEntries()
+	 * prepends the latest compaction for model context; the transcript shows it where
+	 * it happened, after the kept tail and before later turns, matching the live view.
+	 */
+	private buildTranscriptEntries(): SessionEntry[] {
+		const position = new Map(this.sessionManager.getBranch().map((entry, index) => [entry.id, index]));
+		return this.sessionManager.buildContextEntries().sort((a, b) => position.get(a.id)! - position.get(b.id)!);
 	}
 
 	// =========================================================================
