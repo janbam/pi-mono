@@ -111,6 +111,23 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("deviceId", () => {
+		it("creates one global device ID and reuses it in later processes", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ deviceId: "project-device" }));
+			const first = SettingsManager.create(projectDir, agentDir);
+
+			const deviceId = first.getOrCreateDeviceId();
+			await first.flush();
+
+			expect(deviceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+			expect(first.getOrCreateDeviceId()).toBe(deviceId);
+			expect(SettingsManager.create(projectDir, agentDir).getOrCreateDeviceId()).toBe(deviceId);
+			expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({ theme: "dark", deviceId });
+		});
+	});
+
 	describe("packages migration", () => {
 		it("should keep local-only extensions in extensions array", () => {
 			const settingsPath = join(agentDir, "settings.json");
@@ -546,6 +563,37 @@ describe("SettingsManager", () => {
 		expect(reloadedManager.getFullscreenCopyOnSelect()).toBe(true);
 	});
 
+	// #9758: the fork keeps numeric steps uncapped and normalizes upstream's auto setting to 1.
+	it("persists uncapped fullscreen wheel steps and defaults invalid values to one", async () => {
+		const manager = SettingsManager.create(projectDir, agentDir);
+		expect(manager.getFullscreenWheelScrollLines()).toBe(1);
+
+		manager.setFullscreenWheelScrollLines(1000.9);
+		await manager.flush();
+		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")).fullscreenWheelScrollLines).toBe(1000);
+		expect(() => manager.setFullscreenWheelScrollLines(Number.NaN)).toThrow("Invalid fullscreenWheelScrollLines");
+		expect(() => manager.setFullscreenWheelScrollLines(Number.POSITIVE_INFINITY)).toThrow(
+			"Invalid fullscreenWheelScrollLines",
+		);
+		expect(manager.getFullscreenWheelScrollLines()).toBe(1000);
+
+		for (const [value, expected] of [
+			[7.9, 7],
+			[0.5, 1],
+			[0, 1],
+			[-3, 1],
+			[1000, 1000],
+			["auto", 1],
+			["fast", 1],
+			["7", 1],
+			[null, 1],
+			[true, 1],
+		] as const) {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ fullscreenWheelScrollLines: value }));
+			expect(SettingsManager.create(projectDir, agentDir).getFullscreenWheelScrollLines()).toBe(expected);
+		}
+	});
+
 	describe("outputPad", () => {
 		it("should default to 1 and persist binary values", async () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
@@ -637,6 +685,48 @@ describe("SettingsManager", () => {
 		it("preserves an empty tool list", () => {
 			expect(SettingsManager.inMemory({ defaultTools: [] }).getDefaultTools()).toEqual([]);
 			expect(SettingsManager.inMemory().getDefaultTools()).toBeUndefined();
+		});
+
+		it("applies +name and -name to the default selection", () => {
+			expect(SettingsManager.inMemory({ defaultTools: ["+codemode", "-write"] }).getDefaultTools()).toEqual([
+				"read",
+				"bash",
+				"edit",
+				"codemode",
+			]);
+			expect(SettingsManager.inMemory({ defaultTools: ["read", "+grep", "+read"] }).getDefaultTools()).toEqual([
+				"read",
+				"grep",
+			]);
+		});
+
+		it("layers project modifiers on top of the global selection", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ defaultTools: ["read", "bash", "+codemode"] }),
+			);
+			writeFileSync(
+				join(projectDir, ".pi", "settings.json"),
+				JSON.stringify({ defaultTools: ["-codemode", "+tool_search"] }),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getDefaultTools()).toEqual(["read", "bash", "tool_search"]);
+
+			manager.applyOverrides({ defaultTools: ["+codemode"] });
+			expect(manager.getDefaultTools()).toEqual(["read", "bash", "tool_search", "codemode"]);
+		});
+
+		it("applies project modifiers to the built-in defaults without a global setting", () => {
+			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["+codemode"] }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getDefaultTools()).toEqual([
+				"read",
+				"bash",
+				"edit",
+				"write",
+				"codemode",
+			]);
 		});
 	});
 

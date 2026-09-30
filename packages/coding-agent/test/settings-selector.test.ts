@@ -61,9 +61,28 @@ describe("SettingsSelectorComponent", () => {
 		numberInput.selectItem("fullscreen-wheel-scroll-lines");
 		numberInput.handleInput("\r");
 		numberInput.handleInput("\x7f");
-		numberInput.handleInput("17");
+		numberInput.handleInput("123.9");
 		numberInput.handleInput("\r");
-		expect(onWheelScrollLinesChange).toHaveBeenCalledWith(17);
+		expect(onWheelScrollLinesChange).toHaveBeenCalledWith(123);
+
+		// Invalid free-form text stays editable; neither auto nor NaN reaches persistence.
+		numberInput.handleInput("\r");
+		numberInput.handleInput("\x15");
+		numberInput.handleInput("auto");
+		numberInput.handleInput("\r");
+		expect(onWheelScrollLinesChange).toHaveBeenCalledOnce();
+		expect(stripAnsi(numberInput.render(120).join("\n"))).toContain("Enter a finite number.");
+		numberInput.handleInput("\x15");
+		numberInput.handleInput("0.5");
+		numberInput.handleInput("\r");
+		expect(onWheelScrollLinesChange).toHaveBeenLastCalledWith(1);
+
+		// Scientific notation must survive the parent callback's numeric conversion.
+		numberInput.handleInput("\r");
+		numberInput.handleInput("\x15");
+		numberInput.handleInput("1e21");
+		numberInput.handleInput("\r");
+		expect(onWheelScrollLinesChange).toHaveBeenLastCalledWith(1e21);
 
 		cycle("Fullscreen copy on select", 2);
 		expect(onCopyOnSelectChange.mock.calls.flat()).toEqual([false, true]);
@@ -76,7 +95,7 @@ describe("SettingsSelectorComponent", () => {
 			modelThinkingLevels: {},
 			currentTheme: "dark",
 			terminalTheme: "dark",
-			availableThemes: ["dark", "light"],
+			availableThemes: ["system", "dark", "light"],
 			warnings: {},
 		} as unknown as SettingsConfig;
 		const callbacks = { onThemePreview: vi.fn(), onCancel: () => {} } as unknown as SettingsCallbacks;
@@ -85,7 +104,9 @@ describe("SettingsSelectorComponent", () => {
 		list.selectItem("theme");
 		list.handleInput("\r");
 		let output = stripAnsi(list.render(120).join("\n"));
-		expect(output).toContain("    Automatic");
+		expect(output).toMatch(
+			/ {4}system +Theme created from your terminal's colors\n {4}automatic +Use separate themes/,
+		);
 		expect(output).toContain("→ ✓ dark");
 
 		list.handleInput("\x1b[B");

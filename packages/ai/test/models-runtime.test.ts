@@ -198,6 +198,20 @@ describe("Models runtime", () => {
 		}
 	});
 
+	it("keeps chat reads independent from the all-model catalog", async () => {
+		const provider = testProvider({ id: "chat-only" });
+		provider.getAllModels = () => {
+			throw new Error("all models unavailable");
+		};
+		const models = createModels();
+		models.setProvider(provider);
+
+		expect(models.getModels("chat-only").map((model) => model.id)).toEqual(["model-a"]);
+		expect(models.getModel("chat-only", "model-a")?.id).toBe("model-a");
+		expect((await models.getAvailable("chat-only")).map((model) => model.id)).toEqual(["model-a"]);
+		expect(models.getAllModels("chat-only")).toEqual([]);
+	});
+
 	it("swallows provider source failures for both all-provider and single-provider listing", () => {
 		const models = createModels();
 		models.setProvider(
@@ -1047,6 +1061,41 @@ describe("Models runtime", () => {
 		const models = createModels();
 		models.setProvider(testProvider({ id: "p1", auth: { apiKey: failing } }));
 		await expect(models.getAuth("p1")).rejects.toMatchObject({ code: "auth" });
+	});
+
+	it("normalizes omitted and explicit off in completeSimple without altering raw complete", async () => {
+		const calls: ProviderCall[] = [];
+		const model: Model<Api> = {
+			...testModel("always-thinking", "model-a"),
+			reasoning: true,
+			thinkingLevelMap: { off: null, minimal: null, low: "low" },
+		};
+		const models = createModels();
+		models.setProvider(testProvider({ id: model.provider, models: [model], calls }));
+
+		// Exercise dispatch, not only the normalization helper, so a lost merge call cannot pass.
+		expect((await models.completeSimple(model, context)).stopReason).toBe("stop");
+		expect((await models.completeSimple(model, context, { reasoning: "off" })).stopReason).toBe("stop");
+		expect(calls).toHaveLength(2);
+		for (const call of calls) expect(call.options).toMatchObject({ reasoning: "low" });
+
+		// Raw API-specific requests keep caller-owned payload semantics.
+		await models.complete(model, context, { reasoning: "off" });
+		expect(calls[2].options).toMatchObject({ reasoning: "off" });
+	});
+
+	it("rejects non-chat models before completeSimple provider dispatch", async () => {
+		const calls: ProviderCall[] = [];
+		const models = createModels();
+		models.setProvider(testProvider({ id: "p1", calls }));
+
+		// Simulate an untyped caller sending an image entry through the chat operation.
+		const image = { ...testModel("p1", "image-a"), type: "image" } as unknown as Model<Api>;
+		const result = await models.completeSimple(image, context, { reasoning: "off" });
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("chat");
+		expect(calls).toEqual([]);
 	});
 
 	it("uses explicit request api key and env during provider auth resolution", async () => {

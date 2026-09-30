@@ -99,6 +99,50 @@ describe("AgentSession pause at turn boundary", () => {
 		expect(harness.session.messages.at(-1)?.role).toBe("toolResult");
 	});
 
+	it("persists turn_end drafts before holding and defers agent_before_settle until resume", async () => {
+		let settledBoundaries = 0;
+		const harness = await createHarness({
+			tools: [echoTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("turn_end", (event) => {
+						if (event.toolResults.length > 0) {
+							return {
+								entries: [
+									{
+										type: "custom_message",
+										customType: "boundary",
+										content: "persisted draft",
+										display: false,
+									},
+								],
+							};
+						}
+					});
+					pi.on("agent_before_settle", () => {
+						settledBoundaries++;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		scriptToolTurnThenDone(harness);
+		const disarm = armPauseOnToolStart(harness);
+
+		await harness.session.prompt("start");
+		disarm();
+
+		expect(harness.session.isPaused).toBe(true);
+		expect(harness.sessionManager.getBranch().at(-1)).toMatchObject({
+			type: "custom_message",
+			content: "persisted draft",
+		});
+		expect(settledBoundaries).toBe(0);
+		await harness.session.resumePaused();
+		expect(settledBoundaries).toBe(1);
+		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
 	it("resumes without injecting a user message", async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);

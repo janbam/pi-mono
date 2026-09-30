@@ -143,7 +143,10 @@ describe("strict model generation", () => {
 				`globalThis.fetch = async (input) => {\n` +
 				`  const url = String(input);\n` +
 				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
+				// Unified generation requires a canonical classifier and at least one usable image model.
+				`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { id: "jev-latest", name: "Jev", type: "decision" } });\n` +
+				`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test-image", name: "Test Image", architecture: { input_modalities: ["text"], output_modalities: ["image"] } }] });\n` +
+				`  if (url === "https://openrouter.ai/api/v1/models" || url === "https://openrouter.ai/api/v1/models?output_modalities=decisions") return Response.json({ data: [] });\n` +
 				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 				// Strict generation requires the Radius catalog to return at least one model.
 				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
@@ -170,14 +173,14 @@ describe("strict model generation", () => {
 			"openai-completions": Record<string, Model<"openai-completions">>;
 		};
 		const gatewayModels = generated["openai-completions"];
-		expect(gatewayModels[`workers-ai/${standaloneOnlyId}`]).toMatchObject({
+		expect(gatewayModels[`chat:workers-ai/${standaloneOnlyId}`]).toMatchObject({
 			id: `workers-ai/${standaloneOnlyId}`,
 			name: "Standalone only",
 			api: "openai-completions",
 			provider: "cloudflare-ai-gateway",
 			baseUrl: CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
 		});
-		expect(gatewayModels[`workers-ai/${overlappingId}`]).toMatchObject({
+		expect(gatewayModels[`chat:workers-ai/${overlappingId}`]).toMatchObject({
 			name: "Gateway metadata",
 			contextWindow: 16384,
 			maxTokens: 2048,

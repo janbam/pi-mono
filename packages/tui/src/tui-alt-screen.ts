@@ -57,6 +57,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "./utils.ts";
+import { WheelScrollAccelerator, type WheelScrollLines } from "./wheel-scroll.ts";
 
 const ENTER_ALT_SCREEN = "\x1b[?1049h";
 const EXIT_ALT_SCREEN = "\x1b[?1049l";
@@ -163,8 +164,11 @@ interface SearchHighlightRange {
 }
 
 export interface TuiAltScreenOptions {
-	/** Number of logical lines moved for each unmodified mouse-wheel event. Alt-wheel always moves one line. */
-	wheelScrollLines?: number;
+	/**
+	 * Logical lines moved for each unmodified mouse-wheel event (default: 1), floored and at least 1.
+	 * `"auto"` accelerates fast wheel spins. Alt-wheel always moves one line for precision.
+	 */
+	wheelScrollLines?: WheelScrollLines;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
 	mouse?: boolean;
 	/** Style a non-current transcript search match. */
@@ -235,7 +239,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		x: number;
 		y: number;
 	};
-	private wheelScrollLines: number;
+	private readonly wheelScroll: WheelScrollAccelerator;
 	private readonly mouseEnabled: boolean;
 	private readonly searchMatchStyle: (text: string) => string;
 	private readonly searchCurrentMatchStyle: (text: string) => string;
@@ -262,7 +266,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		};
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
-		this.wheelScrollLines = Math.max(1, Math.floor(options.wheelScrollLines ?? 1));
+		this.wheelScroll = new WheelScrollAccelerator(options.wheelScrollLines ?? 1);
 		this.mouseEnabled = options.mouse ?? true;
 		this.searchMatchStyle = options.searchMatchStyle ?? ((text) => `\x1b[4m${text}\x1b[24m`);
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
@@ -283,17 +287,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return this.getPrimaryScrollView().isFollowingEnd;
 	}
 
+	/** Set the normal wheel step or automatic acceleration; Alt-wheel remains one line. */
+	setWheelScrollLines(lines: WheelScrollLines): void {
+		this.wheelScroll.setLines(lines);
+	}
+
 	getCopyOnSelect(): boolean {
 		return this.copyOnSelect;
 	}
 
 	setCopyOnSelect(enabled: boolean): void {
 		this.copyOnSelect = enabled;
-	}
-
-	/** Set the normal wheel step; Alt-wheel remains a one-line precision gesture. */
-	setWheelScrollLines(lines: number): void {
-		this.wheelScrollLines = Math.max(1, Math.floor(lines));
 	}
 
 	/** Whether the fullscreen viewport has a non-empty active text selection. */
@@ -686,9 +690,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		const wheelEvent = this.parseWheelEvent(data);
 		if (wheelEvent) {
-			const event = this.createMouseEvent("wheel", wheelEvent.button, wheelEvent.x, wheelEvent.y, {
-				wheelDelta: wheelEvent.direction * this.getWheelScrollLines(wheelEvent.button),
-			});
+			// Alt-wheel stays precise, independent of the configured step or automatic acceleration.
+			const lines =
+				(wheelEvent.button & 8) !== 0 ? 1 : this.wheelScroll.next(wheelEvent.direction, performance.now());
+			const wheelDelta = wheelEvent.direction * lines;
+			const event = this.createMouseEvent("wheel", wheelEvent.button, wheelEvent.x, wheelEvent.y, { wheelDelta });
 			const overlay = this.dispatchMouseToOverlay(event);
 			const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 			if (result) {
@@ -696,7 +702,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				return { consume: true };
 			}
 			if (this.shouldDeferViewportInputToOverlay()) return undefined;
-			this.routeWheel(wheelEvent);
+			this.routeWheel(wheelEvent, wheelDelta);
 			return { consume: true };
 		}
 		const mouseEvent = this.parseSgrMouseEvent(data);
@@ -971,13 +977,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return undefined;
 	}
 
-	private getWheelScrollLines(button: number): number {
-		// Keep Alt-wheel precise even when normal wheel events use a larger configured step.
-		return (button & 8) !== 0 ? 1 : this.wheelScrollLines;
-	}
-
-	private routeWheel(event: WheelEvent): void {
-		let remaining = event.direction * this.getWheelScrollLines(event.button);
+	private routeWheel(event: WheelEvent, delta: number): void {
+		let remaining = delta;
 		const seen = new Set<ScrollView>();
 		for (const scrollView of this.currentLayout ? getScrollViewsAt(this.currentLayout, event.x, event.y) : []) {
 			seen.add(scrollView);

@@ -138,6 +138,7 @@ describe("buildSystemPrompt", () => {
 				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
 			expect(prompt).not.toContain("environment variables (docs/environment-variables.md)");
+			expect(prompt).not.toContain("MCP servers (docs/mcp.md)");
 		});
 	});
 

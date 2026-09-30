@@ -9,7 +9,8 @@ import {
 	OPENCODE_GO_PRICING_URL,
 	parseOpenCodeGoPricingTable,
 } from "../scripts/opencode-go-pricing.ts";
-import type { Model } from "../src/types.ts";
+import type { AnyModel, Api, Model } from "../src/types.ts";
+import { isModelType } from "../src/utils/model-operations.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const temporaryRoots: string[] = [];
@@ -376,7 +377,10 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 				`  const url = String(input);\n` +
 				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
 				`  if (url === ${JSON.stringify(OPENCODE_GO_PRICING_URL)}) return new Response(pricingPage, { status: 200 });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
+				// Unified generation requires a canonical classifier and at least one usable image model.
+				`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { id: "jev-latest", name: "Jev", type: "decision" } });\n` +
+				`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test-image", name: "Test Image", architecture: { input_modalities: ["text"], output_modalities: ["image"] } }] });\n` +
+				`  if (url === "https://openrouter.ai/api/v1/models" || url === "https://openrouter.ai/api/v1/models?output_modalities=decisions") return Response.json({ data: [] });\n` +
 				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 				// Strict generation requires the Radius catalog to return at least one model.
 				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
@@ -433,7 +437,9 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 				`globalThis.fetch = async (input) => {\n` +
 				`  const url = String(input);\n` +
 				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
+				`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { id: "jev-latest", name: "Jev", type: "decision" } });\n` +
+				`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test-image", name: "Test Image", architecture: { input_modalities: ["text"], output_modalities: ["image"] } }] });\n` +
+				`  if (url === "https://openrouter.ai/api/v1/models" || url === "https://openrouter.ai/api/v1/models?output_modalities=decisions") return Response.json({ data: [] });\n` +
 				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
 				`  if (url === ${JSON.stringify(OPENCODE_GO_PRICING_URL)}) throw new Error("docs page unreachable");\n` +
@@ -452,8 +458,16 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 	});
 });
 
-/** Read a generated provider file and flatten its API groups into a model map. */
-function readGeneratedModels(isolatedPackageRoot: string, filename: string): Record<string, Model<any>> {
-	const generated = JSON.parse(readFileSync(join(isolatedPackageRoot, "src/providers/data", filename), "utf8"));
-	return Object.assign({}, ...Object.values(generated));
+/** Read chat models by model id from the unified provider catalog's API groups. */
+function readGeneratedModels(isolatedPackageRoot: string, filename: string): Record<string, Model<Api>> {
+	const generated = JSON.parse(
+		readFileSync(join(isolatedPackageRoot, "src/providers/data", filename), "utf8"),
+	) as Record<string, Record<string, AnyModel>>;
+	// Internal keys now include the operation type; price assertions still address chat model ids.
+	return Object.fromEntries(
+		Object.values(generated)
+			.flatMap((group) => Object.values(group))
+			.filter((model) => isModelType(model, "chat"))
+			.map((model) => [model.id, model]),
+	);
 }
