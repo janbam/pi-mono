@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -81,6 +81,143 @@ describe("AgentSession.executeTool", () => {
 			"tool_execution_update",
 			"tool_execution_end",
 		]);
+	});
+
+	it("runs inactive and hidden direct roots with nested effects, updates, and error results in an empty session", async () => {
+		const updates: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerTool({
+						name: "nested_effect",
+						label: "Nested effect",
+						description: "Write a marker",
+						exposure: "codemode",
+						parameters: Type.Object({ text: Type.String() }),
+						execute: async (_id, params, _signal, onUpdate, ctx) => {
+							writeFileSync(join(ctx.cwd, "direct-effect.txt"), params.text);
+							onUpdate?.({ content: [{ type: "text", text: "nested update" }], details: {} });
+							return {
+								content: [{ type: "text", text: params.text }],
+								details: { effect: true },
+								structuredContent: { text: params.text },
+								isError: true,
+							};
+						},
+					});
+					pi.registerTool({
+						name: "direct_root",
+						label: "Direct root",
+						description: "Run nested work",
+						exposure: "hidden",
+						parameters: Type.Object({ text: Type.String() }),
+						execute: async (_id, params, _signal, onUpdate, ctx) => {
+							const child = await ctx.executeTool("nested_effect", params, { onUpdate });
+							return { ...child.result, isError: child.isError };
+						},
+					});
+					pi.on("tool_call", (event) => {
+						if (event.toolName === "nested_effect") event.input.text = "hooked";
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.session.setActiveToolsByName([]);
+
+		const result = await harness.session.executeTool(
+			"direct_root",
+			{ text: "original" },
+			{
+				toolCallId: "root",
+				onUpdate: (partial) => updates.push(getMessageText(partial)),
+			},
+		);
+
+		expect(readFileSync(join(harness.tempDir, "direct-effect.txt"), "utf8")).toBe("hooked");
+		expect(result).toMatchObject({ isError: true, structuredContent: { text: "hooked" }, details: { effect: true } });
+		expect(updates).toEqual(["nested update"]);
+		expect(harness.eventsOfType("tool_execution_end")).toEqual([
+			expect.objectContaining({ toolCallId: "root/1", parentToolCallId: "root", isError: true }),
+			expect.objectContaining({ toolCallId: "root", isError: true }),
+		]);
+		expect(harness.session.getAllTools()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "direct_root", exposure: "hidden", sourceInfo: expect.any(Object) }),
+			]),
+		);
+		expect(harness.session.messages).toEqual([]);
+		expect(harness.sessionManager.getEntries()).toEqual([]);
+	});
+
+	it("inherits direct cancellation in nested calls without performing the nested effect", async () => {
+		let effects = 0;
+		const controller = new AbortController();
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerTool({
+						name: "cancelled_child",
+						label: "Child",
+						description: "Must not execute",
+						exposure: "codemode",
+						parameters: Type.Object({}),
+						execute: async () => {
+							effects++;
+							return { content: [], details: {} };
+						},
+					});
+					pi.registerTool({
+						name: "cancel_root",
+						label: "Root",
+						description: "Cancel before nested work",
+						parameters: Type.Object({}),
+						execute: async (_id, _params, signal, _onUpdate, ctx) => {
+							expect(signal).toBe(controller.signal);
+							controller.abort();
+							const child = await ctx.executeTool("cancelled_child", {});
+							return { ...child.result, isError: child.isError };
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const result = await harness.session.executeTool("cancel_root", {}, { signal: controller.signal });
+
+		expect(result.isError).toBe(true);
+		expect(getMessageText(result)).toBe("Operation aborted");
+		expect(effects).toBe(0);
+		expect(harness.session.messages).toEqual([]);
+	});
+
+	it("prepares direct arguments once and executes tool_call mutations", async () => {
+		const runs: string[] = [];
+		let preparations = 0;
+		const tool = createEchoTool(runs);
+		const prepare = tool.prepareArguments!;
+		tool.prepareArguments = (args) => {
+			preparations++;
+			return prepare(args);
+		};
+		const harness = await createHarness({
+			tools: [tool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("tool_call", (event) => {
+						if (event.toolName === "echo") event.input.text = "mutated";
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const result = await harness.session.executeTool("echo", { legacyText: "original" });
+
+		expect(preparations).toBe(1);
+		expect(runs).toEqual(["mutated"]);
+		expect(getMessageText(result)).toBe("mutated");
 	});
 
 	it("executes a built-in registered tool by name", async () => {

@@ -34,7 +34,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 			},
 			openUrl: openBrowser,
 			onRightClickPaste: options.onRightClickPaste,
-			wheelScrollLines: options.fullscreenWheelScrollLines,
+			wheelScrollLines: options.fullscreenWheelScrollLines ?? 1,
 			copyOnSelect: options.fullscreenCopyOnSelect,
 			copySelection: async (text) => {
 				try {

@@ -295,9 +295,7 @@ export class AgentSessionRuntime {
 			const sessionDir = this.session.sessionManager.getSessionDir();
 			if (!existsSync(currentSessionFile)) {
 				if (targetLeafId !== null) {
-					throw new Error(
-						"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
-					);
+					throw new Error("This session has not been saved yet. Send a message before cloning or forking it.");
 				}
 
 				// An empty unsaved conversation has no durable state to inherit, so preserve the existing root-fork path.

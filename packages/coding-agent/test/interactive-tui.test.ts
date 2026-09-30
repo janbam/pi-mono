@@ -1,9 +1,19 @@
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
-import { Container, getKeybindings, isViewportTUI, ScrollView, setKeybindings, Text } from "@earendil-works/pi-tui";
+import {
+	Container,
+	getKeybindings,
+	isViewportTUI,
+	ScrollView,
+	setKeybindings,
+	Text,
+	TuiAltScreen,
+} from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
+import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
+import type { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.ts";
 import {
 	BranchSummaryStatusIndicator,
 	CompactionStatusIndicator,
@@ -18,9 +28,11 @@ import {
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { createHarness } from "./suite/harness.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
+	readClipboardFilePaths: vi.fn<() => Promise<string[] | null>>(),
 	readClipboardText: vi.fn<() => Promise<string | null>>(),
 }));
 
@@ -103,6 +115,71 @@ describe("createInteractiveTui", () => {
 			expect(scrollView.scrollTop).toBe(4);
 		} finally {
 			ui.stop();
+		}
+	});
+
+	it("wires persisted wheel steps at startup, through settings, and after switching to fullscreen", async () => {
+		const harness = await createHarness({ settings: { fullscreenWheelScrollLines: 3.9 } });
+		const terminal = new RecordingTerminal(20, 4);
+		const runtimeHost = {
+			session: harness.session,
+			setBeforeSessionInvalidate: vi.fn(),
+			setRebindSession: vi.fn(),
+		} as unknown as AgentSessionRuntime;
+		const mode = new InteractiveMode(runtimeHost, { tuiMode: "fullscreen", terminal });
+		const controls = mode as unknown as {
+			renderer: ReturnType<typeof createInteractiveTui>;
+			fullscreenLayoutRoot: Component;
+			editorContainer: Container;
+			showSettingsSelector(): void;
+			switchTuiMode(mode: TuiMode, restoreProgress?: boolean): boolean;
+			themeController: { dispose(): void };
+		};
+		const transcript = new ScrollView(
+			new Text(Array.from({ length: 200 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
+			{ primary: true },
+		);
+		controls.fullscreenLayoutRoot = transcript;
+		expect(controls.renderer).toBeInstanceOf(TuiAltScreen);
+		(controls.renderer as TuiAltScreen).setLayoutRoot(transcript);
+		controls.renderer.start();
+		try {
+			// The real InteractiveMode constructor must pass the normalized persisted step.
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<65;1;1M");
+			await terminal.waitForRender();
+			expect(transcript.scrollTop).toBe(3);
+
+			// Exercise the actual settings callback, not just the renderer's public setter.
+			controls.showSettingsSelector();
+			const selector = controls.editorContainer.children[0] as SettingsSelectorComponent;
+			const list = selector.getSettingsList();
+			list.selectItem("fullscreen-wheel-scroll-lines");
+			list.handleInput("\r");
+			list.handleInput("\x15");
+			list.handleInput("123.9");
+			list.handleInput("\r");
+			expect(harness.settingsManager.getFullscreenWheelScrollLines()).toBe(123);
+			terminal.sendInput("\x1b[<65;1;1M");
+			await terminal.waitForRender();
+			expect(transcript.scrollTop).toBe(126);
+			terminal.sendInput("\x1b[<73;1;1M");
+			await terminal.waitForRender();
+			expect(transcript.scrollTop).toBe(127);
+
+			// A setting changed in regular mode must survive renderer replacement.
+			expect(controls.switchTuiMode("regular", false)).toBe(true);
+			harness.settingsManager.setFullscreenWheelScrollLines(7);
+			expect(controls.switchTuiMode("fullscreen", false)).toBe(true);
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<65;1;1M");
+			await terminal.waitForRender();
+			expect(transcript.scrollTop).toBe(134);
+		} finally {
+			controls.renderer.stop();
+			mode.stop();
+			controls.themeController.dispose();
+			harness.cleanup();
 		}
 	});
 
@@ -229,6 +306,40 @@ describe("InteractiveMode right-click paste", () => {
 
 		expect(handleInput).toHaveBeenCalledWith("\x1b[200~clipboard text\x1b[201~");
 		expect(requestRender).toHaveBeenCalledOnce();
+	});
+});
+
+describe("InteractiveMode status history", () => {
+	it("coalesces consecutive statuses without rewriting earlier statuses on theme redraw", () => {
+		initTheme("dark");
+		const context = {
+			chatContainer: new Container(),
+			lastStatusSpacer: undefined as Component | undefined,
+			lastStatusText: undefined as Component | undefined,
+			ui: { requestRender: vi.fn() },
+		};
+		const prototype = InteractiveMode.prototype as unknown as {
+			showStatus(this: typeof context, message: string): void;
+		};
+
+		// Back-to-back updates replace the pending status without adding another row.
+		prototype.showStatus.call(context, "First status");
+		context.chatContainer.render(80);
+		prototype.showStatus.call(context, "Updated first status");
+		expect(context.chatContainer.children).toHaveLength(2);
+		expect(context.chatContainer.render(80).join("\n")).toContain("Updated first status");
+
+		// Intervening chat content commits the old status to independent history.
+		context.chatContainer.addChild(new Text("Intervening message", 0, 0));
+		prototype.showStatus.call(context, "Second status");
+		context.chatContainer.render(80);
+		initTheme("light");
+		context.chatContainer.invalidate();
+		const rendered = context.chatContainer.render(80).join("\n");
+		expect(context.chatContainer.children).toHaveLength(5);
+		expect(rendered).toContain("Updated first status");
+		expect(rendered).toContain("Intervening message");
+		expect(rendered.match(/Second status/g)).toHaveLength(1);
 	});
 });
 

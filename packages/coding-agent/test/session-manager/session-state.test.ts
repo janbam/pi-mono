@@ -58,6 +58,40 @@ describe("SessionManager session-global state", () => {
 		expect(reopened.getSessionState("context")).toEqual({ enabled: true, nested: [1, "two", null] });
 	});
 
+	it("appends the first user message to a state-created file without rewriting or duplicating metadata", () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		session.appendModelChange("test", "model");
+		session.setSessionState("mode", "durable");
+		const sessionFile = session.getSessionFile()!;
+		const prefix = readFileSync(sessionFile, "utf8");
+
+		const userId = session.appendMessage(userMsg("first prompt"));
+
+		expect(readFileSync(sessionFile, "utf8").startsWith(prefix)).toBe(true);
+		const entries = loadEntriesFromFile(sessionFile);
+		expect(entries.filter(isSessionStateEntry)).toHaveLength(1);
+		expect(entries.filter((entry) => entry.type === "message")).toHaveLength(1);
+		const reopened = SessionManager.open(sessionFile, tempDir);
+		expect(reopened.getLeafId()).toBe(userId);
+		expect(reopened.getSessionState("mode")).toBe("durable");
+		expect(reopened.buildSessionContext().messages).toEqual([
+			expect.objectContaining({ role: "user", content: "first prompt" }),
+		]);
+	});
+
+	it("persists a user-only branched path with inherited global state before any assistant response", () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		session.setSessionState("mode", "durable");
+		const userId = session.appendMessage(userMsg("first prompt"));
+
+		const branchFile = session.createBranchedSession(userId)!;
+		const reopened = SessionManager.open(branchFile, tempDir);
+
+		expect(reopened.getSessionState("mode")).toBe("durable");
+		expect(reopened.getLeafId()).toBe(userId);
+		expect(reopened.buildSessionContext().messages).toHaveLength(1);
+	});
+
 	it("leaves no effective value or file history when the initial durable rewrite fails", () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		const sessionFile = session.getSessionFile()!;

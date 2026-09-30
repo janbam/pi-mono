@@ -99,6 +99,8 @@ Fork behavior: `ctx.modelRegistry.completeSimple()` accepts provider-neutral opt
 
 The same normalization applies to the public Pi compatibility API and Models implementation, so the TUI, CLI, and extensions share one policy boundary. Raw API-specific requests remain unchanged for callers that deliberately own provider payload semantics.
 
+Merge note: v0.99.1 adds mixed chat, image, and classifier catalogs. Chat validation runs before fork reasoning normalization. Virtual one-off requests route first, then normalize against the physical model's metadata.
+
 Implementation:
 
 - Model-aware options and shared normalization: `packages/ai/src/types.ts`, `packages/ai/src/models.ts`
@@ -142,6 +144,8 @@ Fork behavior:
 - Resume: after `bindExtensions` (session resume, `/fork`) and when idle warming is enabled (immediately while idle, at settlement when enabled mid-run), `CacheWarmer.restore()` rebuilds the transcript's last request (projection before the last assistant message, `context` hooks, `convertToLlm`, agent request options) and derives the lease from the last assistant timestamp and later `cache_warm` entries. No custom markers. Compaction, branch summaries, and context edits after that request, a model change, or an expired entry prevent the restore.
 
 Merge note: fork request options carry the unresolved Pi thinking level (`ModelsSimpleStreamOptions`, see model-aware requests above), so `CacheWarmer`'s helpers accept that type and `isReplayable` judges the clamped level. The constructor takes a policy getter (`{ mode, maxAgeMs }`) instead of upstream's mode getter, plus an optional request-rebuild function.
+
+Virtual-model selections are not warmed or restored. Upstream's current-context policy rejects their routed physical requests; transcript restore also skips them so a replay cannot route to a different model.
 
 Implementation:
 
@@ -202,10 +206,13 @@ Implementation:
 
 Fork behavior: `AgentSession.executeTool()` for SDK hosts, `pi.executeTool()` for extensions, and RPC commands `get_all_tools` / `execute_tool` run a registered tool by name without starting an agent turn or appending a tool-result message. Argument preparation, schema validation, `tool_call` blocking, `tool_result` mutation, and lifecycle events behave as for model-requested calls.
 
+Merge note: v0.99.1 introduces nested `ctx.executeTool()` with its own `ExecuteToolOptions`. The fork's direct-call type is now `DirectExecuteToolOptions`; extensions importing the previous name for `pi.executeTool()` must update their import. Direct execution shares upstream's `runToolCall` policy and supports nested calls without adding transcript entries. Trusted direct callers can execute inactive or hidden registered tools; exposure controls model and codemode discovery, not the direct API.
+
 Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/extensions/types.ts`, `src/modes/rpc/`. Tests: `test/suite/agent-session-execute-tool.test.ts`, `test/rpc-direct-tool-execution.test.ts`.
 
 ## Smaller fork additions
 
+- Status messages retain their own text across theme redraws. Upstream v0.99.1 rebuilds every status from one shared latest-message field, which rewrites older transcript statuses. The fork snapshots each message and replaces only immediately consecutive status rows. `packages/coding-agent/src/modes/interactive/interactive-mode.ts` (`showStatus`), tested in `test/interactive-tui.test.ts`.
 - GitHub Copilot's Claude Opus 5.5 catalog entry keeps `off` and `minimal` thinking unavailable even after models.dev lists the model. The generator applies the restriction to both upstream and fallback entries: `packages/ai/scripts/generate-models.ts` (`GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES`), tested in `packages/ai/test/github-copilot-anthropic.test.ts`.
 - `--log-api-requests <file>` writes every outgoing provider request (URL, method, redacted headers, body, status, duration) as JSONL by wrapping global `fetch`, plus every outgoing WebSocket message (`method: "WS"`, e.g. OpenAI Codex's default `auto` transport) by wrapping global `WebSocket`. Amazon Bedrock's node:http transport is not covered. `packages/coding-agent/src/core/api-request-logging.ts`, test `test/api-request-logging.test.ts`.
 - `/export <file>.md` exports the visible conversation as Markdown with thinking omitted and tools rendered like interactive mode. `packages/coding-agent/src/core/session-export.ts` (`exportSessionToMarkdown`), `AgentSession.exportToMarkdown()`, test `test/export-markdown.test.ts`.
@@ -213,12 +220,15 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 - Transcript rendering orders entries chronologically, so the latest `[compaction]` box sits after the kept tail on resume and rebuild instead of being hoisted to the top (upstream renders `buildContextEntries()` in model-context order, which prepends the compaction). All render paths (initial render, chat rebuild, both live compaction handlers) share `buildTranscriptEntries()` in `interactive-mode.ts`; model context is unchanged. Test `test/interactive-mode-compaction.test.ts`.
 - Shift+Enter under tmux: `matchesKey`/`parseKey` treat legacy `\x1b\r` and `\n` as shift+enter regardless of Kitty protocol state (upstream only does so while Kitty is active and otherwise reads `\x1b\r` as alt+enter and `\n` as enter). `packages/tui/src/keys.ts`.
 - `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and matching `@earendil-works/*` ranges, or npm installs a nested published copy.
+- SQLite test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for durable conformance cases that close and reopen SQLite after every commit. Assertions and production behavior are unchanged. `packages/durable/vitest.config.ts`, `packages/session-backends/sqlite-node/vitest.config.ts`.
 
 ## Fullscreen mouse-wheel scrolling has a configurable step
 
-Upstream behavior: each mouse-wheel event moves the fullscreen transcript by one logical line, or five lines while Alt is held.
+Upstream behavior: `fullscreenWheelScrollLines` accepts a number from 1 to 100 or `"auto"`. The default `"auto"` accelerates wheel events outside local macOS terminals. Alt-wheel multiplies the current step by five.
 
 Fork behavior: `fullscreenWheelScrollLines` controls the normal wheel step and defaults to 1. `/settings` accepts a free-form number instead of a preset list; persisted values are rounded down and clamped to at least 1. Alt-wheel always moves one line for precision. Changes apply immediately to an active fullscreen renderer and also when switching into fullscreen mode.
+
+Merge note: upstream's `WheelScrollAccelerator` remains available to renderer callers, including `"auto"`. Fork settings retain the numeric policy with no upper cap; invalid persisted values, including `"auto"`, resolve to 1.
 
 Implementation:
 
@@ -226,6 +236,10 @@ Implementation:
 - Fullscreen renderer behavior and wiring: `packages/tui/src/tui-alt-screen.ts`, `packages/coding-agent/src/modes/interactive/tui-renderer.ts`
 - Tests: `packages/tui/test/tui-alt-screen.test.ts`, `packages/coding-agent/test/settings-manager.test.ts`, `test/settings-selector.test.ts`, `test/interactive-tui.test.ts`
 - User documentation: `packages/coding-agent/docs/settings.md`
+
+## Known upstream v0.99.1 integration limitation
+
+Radius browser sign-in can stall when a failed code exchange is followed immediately by another login. The one-shot shared OAuth callback server sends a keep-alive response, then closes. A pooled client can reuse that closed loopback socket and fail with `UND_ERR_SOCKET`, leaving the new callback waiter pending. The existing `packages/ai/test/radius-oauth.test.ts` double-login test reproduces this on Node 24.13.0. Keeping upstream's callback-server behavior unchanged was an explicit integration decision. `packages/ai/src/auth/oauth/callback-server.ts`, `packages/ai/src/auth/oauth/radius.ts`.
 
 ## Keybinding experiments that were reverted
 

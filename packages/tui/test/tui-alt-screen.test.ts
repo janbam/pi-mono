@@ -514,6 +514,40 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	// #9758: runtime updates reach component dispatch too; the fork keeps Alt-wheel precise.
+	it("applies runtime wheel line count updates", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { wheelScrollLines: 3 });
+		const deltas: Array<number | undefined> = [];
+		tui.addChild(
+			new MouseRegion(new Text("wheel target", 0, 0), (event) => {
+				if (event.type !== "wheel") return undefined;
+				deltas.push(event.wheelDelta);
+				return { handled: true };
+			}),
+		);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<64;1;1M");
+			tui.setWheelScrollLines(123.9);
+			terminal.sendInput("\x1b[<65;1;1M");
+			terminal.sendInput("\x1b[<72;1;1M");
+			// Numeric steps are floored without a 100-line cap, including legacy mouse encoding.
+			terminal.sendInput(`\x1b[M${String.fromCharCode(64 + 32)}!!`);
+			tui.setWheelScrollLines(0.5);
+			terminal.sendInput("\x1b[<65;1;1M");
+			tui.setWheelScrollLines(Number.NaN);
+			terminal.sendInput("\x1b[<65;1;1M");
+			tui.setWheelScrollLines("auto");
+			terminal.sendInput("\x1b[<64;1;1M");
+			terminal.sendInput("\x1b[<73;1;1M");
+			assert.deepStrictEqual(deltas, [-3, 123, -1, -123, 1, 1, -1, 1]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("chains unused wheel delta to an outer scroll view", async () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, { wheelScrollLines: 3 });
