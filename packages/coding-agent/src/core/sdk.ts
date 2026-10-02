@@ -500,6 +500,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		cacheWarmer,
 		cacheWarmingOverride,
 		initialActiveToolNames,
+		usesDefaultTools: options.tools === undefined && !options.noTools,
 		allowedToolNames,
 		excludedToolNames,
 		extensionRunnerRef,
