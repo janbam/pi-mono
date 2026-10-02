@@ -101,6 +101,8 @@ The same normalization applies to the public Pi compatibility API and Models imp
 
 Merge note: v0.99.1 adds mixed chat, image, and classifier catalogs. Chat validation runs before fork reasoning normalization. Virtual one-off requests route first, then normalize against the physical model's metadata.
 
+Merge note: v1.0.0 moves the harness tests into `packages/durable`. Its compaction tests assert that the session thinking level reaches summary requests, so the fixture model in `packages/durable/test/harness-compaction.test.ts` declares `reasoning: true`; the faux default (`reasoning: false`) is clamped to `off` by the fork.
+
 Implementation:
 
 - Model-aware options and shared normalization: `packages/ai/src/types.ts`, `packages/ai/src/models.ts`
@@ -220,7 +222,7 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 - Transcript rendering orders entries chronologically, so the latest `[compaction]` box sits after the kept tail on resume and rebuild instead of being hoisted to the top (upstream renders `buildContextEntries()` in model-context order, which prepends the compaction). All render paths (initial render, chat rebuild, both live compaction handlers) share `buildTranscriptEntries()` in `interactive-mode.ts`; model context is unchanged. Test `test/interactive-mode-compaction.test.ts`.
 - Shift+Enter under tmux: `matchesKey`/`parseKey` treat legacy `\x1b\r` and `\n` as shift+enter regardless of Kitty protocol state (upstream only does so while Kitty is active and otherwise reads `\x1b\r` as alt+enter and `\n` as enter). `packages/tui/src/keys.ts`.
 - `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and matching `@earendil-works/*` ranges, or npm installs a nested published copy.
-- SQLite test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for durable conformance cases that close and reopen SQLite after every commit. Assertions and production behavior are unchanged. `packages/durable/vitest.config.ts`, `packages/session-backends/sqlite-node/vitest.config.ts`.
+- Durable test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for conformance cases that close and reopen SQLite after every commit. Assertions and production behavior are unchanged. `packages/durable/vitest.config.ts` (upstream v1.0.0 removed `packages/session-backends/sqlite-node`).
 
 ## Fullscreen mouse-wheel scrolling has a configurable step
 
@@ -237,9 +239,9 @@ Implementation:
 - Tests: `packages/tui/test/tui-alt-screen.test.ts`, `packages/coding-agent/test/settings-manager.test.ts`, `test/settings-selector.test.ts`, `test/interactive-tui.test.ts`
 - User documentation: `packages/coding-agent/docs/settings.md`
 
-## Known upstream v0.99.1 integration limitation
+## Known upstream integration limitation (since v0.99.1, still present in v1.0.0)
 
-Radius browser sign-in can stall when a failed code exchange is followed immediately by another login. The one-shot shared OAuth callback server sends a keep-alive response, then closes. A pooled client can reuse that closed loopback socket and fail with `UND_ERR_SOCKET`, leaving the new callback waiter pending. The existing `packages/ai/test/radius-oauth.test.ts` double-login test reproduces this on Node 24.13.0. Keeping upstream's callback-server behavior unchanged was an explicit integration decision. `packages/ai/src/auth/oauth/callback-server.ts`, `packages/ai/src/auth/oauth/radius.ts`.
+Radius browser sign-in can stall when a failed code exchange is followed immediately by another login. The one-shot shared OAuth callback server sends a keep-alive response, then closes. A pooled client can reuse that closed loopback socket and fail with `UND_ERR_SOCKET`, leaving the new callback waiter pending. The `packages/ai/test/radius-oauth.test.ts` test "exchanges the browser callback code before showing the sign-in page" (failed exchange, then a second login) reproduces this deterministically on Node 24.13.0 and fails `./test.sh`. Keeping upstream's callback-server behavior unchanged was an explicit integration decision. `packages/ai/src/auth/oauth/callback-server.ts`, `packages/ai/src/auth/oauth/radius.ts`.
 
 ## Keybinding experiments that were reverted
 
