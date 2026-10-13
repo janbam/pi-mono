@@ -60,8 +60,36 @@ const endpointsTableHtml = `
 </table>`;
 
 const pricingPageHtml = `${requestsTableHtml}${pricingTableHtml}${endpointsTableHtml}`;
+/** The relocated docs render both plans; Go Plus appears first here to expose order-dependent selection. */
+const planPricingPageHtml = `${requestsTableHtml}
+<div data-plan-panel="go-plus">${pricingTableHtml.replaceAll("<strong>$15</strong>", "<strong>$60</strong>")}</div>
+<div data-plan-panel="go">${pricingTableHtml}</div>
+${endpointsTableHtml}`;
 
 describe("parseOpenCodeGoPricingTable", () => {
+	it("uses the relocated official source and standard Go allowances regardless of panel order", () => {
+		expect(OPENCODE_GO_PRICING_URL).toBe("https://opencode.ai/v2/docs/console/go/");
+		const row = parseOpenCodeGoPricingTable(planPricingPageHtml).get("grok-4.6")!;
+		// Go Plus gives this model $60; standard Go gives $15, so the adjusted cost must still quadruple.
+		expect(row.usage).toBe(15);
+		expect(getOpenCodeGoUsageAdjustedCost(row)).toEqual({ input: 8, output: 24, cacheRead: 2, cacheWrite: 0 });
+	});
+
+	it("rejects missing or empty Go panels and ambiguous unlabelled pricing instead of borrowing another plan", () => {
+		expect(() => parseOpenCodeGoPricingTable(`<div data-plan-panel="go-plus">${pricingPageHtml}</div>`)).toThrow(
+			"pricing panel not found",
+		);
+		// An empty standard panel must not scan forward into the next plan's valid table.
+		expect(() =>
+			parseOpenCodeGoPricingTable(
+				`<div data-plan-panel="go"></div><div data-plan-panel="go-plus">${pricingPageHtml}</div>`,
+			),
+		).toThrow("pricing table not found");
+		expect(() => parseOpenCodeGoPricingTable(`${pricingTableHtml}${pricingPageHtml}`)).toThrow(
+			"ambiguous pricing tables",
+		);
+	});
+
 	it("selects the pricing table by its header columns, keys rows by endpoint model id, and skips high-tier and peak rows", () => {
 		const pricing = parseOpenCodeGoPricingTable(pricingPageHtml);
 		// Every base model appears once under its endpoint model id: the > 200K
@@ -372,7 +400,7 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 		writeFileSync(
 			preloadPath,
 			`const catalog = ${JSON.stringify(catalog)};\n` +
-				`const pricingPage = ${JSON.stringify(pricingPageHtml)};\n` +
+				`const pricingPage = ${JSON.stringify(planPricingPageHtml)};\n` +
 				`globalThis.fetch = async (input) => {\n` +
 				`  const url = String(input);\n` +
 				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +

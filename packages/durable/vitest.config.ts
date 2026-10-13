@@ -9,6 +9,7 @@ export default defineConfig({
 		environment: "node",
 		// Reopen conformance cases exercise dozens of durable SQLite commits on slower hosts.
 		testTimeout: 30_000,
+		setupFiles: ["./test/setup-document-retention.ts"],
 	},
 	resolve: {
 		conditions: ["source"],

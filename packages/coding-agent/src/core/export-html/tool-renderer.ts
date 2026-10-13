@@ -4,12 +4,12 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
-import type { ToolDefinition, ToolRenderContext } from "../extensions/types.ts";
+import type { ToolRenderContext, ToolRenderers } from "../extensions/types.ts";
 import { ansiLinesToHtml } from "./ansi-to-html.ts";
 
 export interface ToolHtmlRendererDeps {
-	/** Function to look up tool definition by name */
-	getToolDefinition: (name: string) => ToolDefinition | undefined;
+	/** Renderers of calls to a tool, as resolved by extensions and the registered tool */
+	getToolRenderers: (name: string) => ToolRenderers | undefined;
 	/** Theme for styling */
 	theme: Theme;
 	/** Working directory for render context */
@@ -72,7 +72,7 @@ function trimRenderedResultLines(lines: string[]): string[] {
 
 /** Share stateful TUI component rendering before adapting the output format. */
 function createToolComponentRenderer(deps: ToolHtmlRendererDeps): ToolComponentRenderer {
-	const { getToolDefinition, theme, cwd, width = 100 } = deps;
+	const { getToolRenderers, theme, cwd, width = 100 } = deps;
 
 	const renderedCallComponents = new Map<string, Component>();
 	const renderedResultComponents = new Map<string, Component>();
@@ -108,6 +108,8 @@ function createToolComponentRenderer(deps: ToolHtmlRendererDeps): ToolComponentR
 			expanded,
 			showImages: false,
 			isError,
+			durationMs: undefined,
+			outputPad: 1,
 		};
 	};
 
@@ -115,7 +117,7 @@ function createToolComponentRenderer(deps: ToolHtmlRendererDeps): ToolComponentR
 		renderCall(toolCallId: string, toolName: string, args: unknown, isPartial: boolean): string[] | undefined {
 			try {
 				renderedArgs.set(toolCallId, args);
-				const toolDef = getToolDefinition(toolName);
+				const toolDef = getToolRenderers(toolName);
 				if (!toolDef?.renderCall) {
 					return undefined;
 				}
@@ -142,7 +144,7 @@ function createToolComponentRenderer(deps: ToolHtmlRendererDeps): ToolComponentR
 			expanded: boolean,
 		): string[] | undefined {
 			try {
-				const toolDef = getToolDefinition(toolName);
+				const toolDef = getToolRenderers(toolName);
 				if (!toolDef?.renderResult) {
 					return undefined;
 				}

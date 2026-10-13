@@ -12,6 +12,11 @@ export interface BuildSystemPromptOptions {
 	forceSystemPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write]. */
 	selectedTools?: string[];
+	/**
+	 * Selected tools whose declarations requests leave out (`prepareLoadout` hidden declarations).
+	 * They are reachable only through another tool, so the tool list and rules leave them out too.
+	 */
+	hiddenTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
 	/** Guideline bullets contributed by each tool, keyed by tool name. */
@@ -34,6 +39,7 @@ export interface BuildSystemPromptOptions {
 
 export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 	selectedTools: string[];
+	hiddenTools: string[];
 	toolSnippets: Record<string, string>;
 	toolGuidelines: Record<string, string[]>;
 	promptGuidelines: string[];
@@ -51,14 +57,13 @@ export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 export type SystemPromptSections = Record<string, string>;
 
 const SYSTEM_PROMPT_SECTION_NAME = /^[a-z][a-z0-9_-]*$/;
-/** Section names {@link buildSystemPromptSections} derives itself; every other name comes from `sections`. */
-const BUILT_IN_SECTION_NAMES = new Set(["preamble", "tools", "rules", "addendum", "project_context", "skills", "cwd"]);
 /** Normalize prompt input into the mutable, collection-complete shape exposed to extensions. */
 export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOptions): NormalizedBuildSystemPromptOptions {
 	return {
 		customPrompt: input.customPrompt,
 		forceSystemPrompt: input.forceSystemPrompt,
 		selectedTools: [...(input.selectedTools ?? ["read", "bash", "edit", "write"])],
+		hiddenTools: [...(input.hiddenTools ?? [])],
 		toolSnippets: { ...(input.toolSnippets ?? {}) },
 		toolGuidelines: Object.fromEntries(
 			Object.entries(input.toolGuidelines ?? {}).map(([name, guidelines]) => [name, [...guidelines]]),
@@ -130,6 +135,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 	const {
 		customPrompt,
 		selectedTools,
+		hiddenTools,
 		toolSnippets,
 		toolGuidelines,
 		promptGuidelines,
@@ -147,6 +153,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		}
 	}
 
+	const declaredTools = selectedTools.filter((name) => !hiddenTools.includes(name));
 	const promptSections: Record<string, string> = {};
 	// JBMOD: an explicit empty string is a valid custom prompt (no base prompt); only undefined means default
 	if (customPrompt !== undefined) {
@@ -154,17 +161,21 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 	} else {
 		// JBMOD: fork preamble replaces upstream's pi-harness introduction
 		promptSections.preamble = "You are the top senior software engineer and system architecture designer.";
-		const visibleTools = selectedTools.filter((name) => !!toolSnippets[name]);
+		const visibleTools = declaredTools.filter((name) => !!toolSnippets[name]);
 		const tools =
 			visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n") : "(none)";
 		promptSections.tools = `${tools}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`;
-		promptSections.rules = buildRules(selectedTools, toolGuidelines, promptGuidelines);
+		promptSections.rules = buildRules(declaredTools, toolGuidelines, promptGuidelines);
 		// JBMOD: upstream's pi documentation section is intentionally omitted
 	}
 
 	if (appendSystemPrompt) promptSections.addendum = appendSystemPrompt;
 	if (contextFiles.length > 0) promptSections.project_context = renderProjectContext(contextFiles);
-	const skillFileReadTool = (["read", "bash"] as const).find((tool) => selectedTools.includes(tool));
+	// A hidden reader is still reachable through another tool, so skills stay but the hint names no tool.
+	const readers = ["read", "bash"] as const;
+	const skillFileReadTool =
+		readers.find((tool) => declaredTools.includes(tool)) ??
+		(readers.some((tool) => selectedTools.includes(tool)) ? "indirect" : undefined);
 	if (skillFileReadTool && skills.length > 0) {
 		const skillsPrompt = formatSkillsForPrompt(skills, skillFileReadTool).trim();
 		if (skillsPrompt) promptSections.skills = skillsPrompt;
@@ -200,28 +211,6 @@ export function buildSystemPromptState(input: BuildSystemPromptOptions): {
 /** Build the system prompt text, rendered exactly as the transcript's system message replays it. */
 export function buildSystemPrompt(input: BuildSystemPromptOptions): string {
 	return getSystemMessageText({ role: "system", ...buildSystemPromptState(input), timestamp: 0 });
-}
-
-/**
- * JBMOD: recover the `sections` input behind the extension-owned sections the model currently
- * has, so a request prepared without a `before_agent_start` pass can rebuild them unchanged.
- *
- * `current` is `getCurrentSystemMessage(...).sections`. Built-in sections are skipped because
- * they are always rebuilt from live state. A section with an invalid name, or whose text is
- * not the builder's `<name>\n...\n</name>` wrapping, cannot be rebuilt byte-identically and
- * is skipped too.
- */
-export function extensionSectionsFromTranscript(current: Record<string, string | null>): Record<string, string> {
-	const sections: Record<string, string> = {};
-	for (const [name, text] of Object.entries(current)) {
-		if (text === null || BUILT_IN_SECTION_NAMES.has(name) || !SYSTEM_PROMPT_SECTION_NAME.test(name)) continue;
-		const open = `<${name}>\n`;
-		const close = `\n</${name}>`;
-		if (text.startsWith(open) && text.endsWith(close) && text.length >= open.length + close.length) {
-			sections[name] = text.slice(open.length, -close.length);
-		}
-	}
-	return sections;
 }
 
 /**

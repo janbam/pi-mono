@@ -77,6 +77,7 @@ describe("InteractiveMode turn usage", () => {
 			isInitialized: true,
 			turnUsage: undefined as UsageTotals | undefined,
 			footer: { invalidate: vi.fn() },
+			programStatus: { handleEvent: vi.fn() },
 			pendingTools: new Map(),
 			runtimeHost: {
 				session: {
