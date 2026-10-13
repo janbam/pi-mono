@@ -1,7 +1,7 @@
 import type { ModelCost } from "../src/types.ts";
 
 // JANBAM fork mod: OpenCode Go publishes its subscription economics at
-// https://opencode.ai/docs/go/. models.dev carries only the nominal per-1M
+// https://opencode.ai/v2/docs/console/go/. models.dev carries only the nominal per-1M
 // prices, but each Go model burns a different monthly usage allowance ($15,
 // $30, or $60) at those nominal prices. To make per-token cost reflect how fast
 // a model drains its allowance, every page price is scaled by
@@ -11,7 +11,8 @@ import type { ModelCost } from "../src/types.ts";
 // exactly. This override applies only to the opencode-go provider, never to
 // opencode (Zen).
 
-export const OPENCODE_GO_PRICING_URL = "https://opencode.ai/docs/go/";
+/** Official Go documentation carrying token prices, plan allowances, and endpoint model ids. */
+export const OPENCODE_GO_PRICING_URL = "https://opencode.ai/v2/docs/console/go/";
 const OPENCODE_GO_USAGE_BASELINE = 60;
 /**
  * Canonical pricing column names and the header wordings that map to them.
@@ -163,8 +164,9 @@ function parseEndpointModelIds(html: string): Map<string, string> {
  * ids from the endpoints table (the page's authoritative name->id mapping).
  * The pricing table is anchored on its header row (Model / Input / Output /
  * Cached Read / Cached Write / Usage-or-Monthly-limit) because it is the only
- * table on the page with those columns: headers are matched through the
- * alias table so wording changes stay compatible, and the canonical column
+ * matching table within the standard Go panel, not Go Plus. A page without
+ * plan panels must have exactly one matching table. Headers are matched through
+ * the alias table so wording changes stay compatible, and the canonical column
  * names drive indexing so a page redesign that renames to an unknown
  * wording, removes, or inserts columns fails loudly here instead of silently
  * shifting prices into the wrong fields. Tiered ("> N tokens") and Peak rows
@@ -172,10 +174,19 @@ function parseEndpointModelIds(html: string): Map<string, string> {
  * "≤ N tokens", or Off-Peak), matching the catalog's single-cost schema.
  */
 export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeGoPricingRow> {
+	// The allowance policy is standard Go: never select Go Plus by document order or a missing panel.
+	const panels = [...html.matchAll(/<div\b[^>]*\bdata-plan-panel="([^"]+)"[^>]*>/g)];
+	const goPanelIndex = panels.findIndex((panel) => panel[1] === "go");
+	if (panels.length > 0 && goPanelIndex === -1) {
+		throw new Error("OpenCode Go pricing panel not found on the docs page");
+	}
+	// Stop at the next plan panel so an empty Go panel cannot borrow Go Plus's prices.
+	const pricingHtml =
+		goPanelIndex === -1 ? html : html.slice(panels[goPanelIndex].index, panels[goPanelIndex + 1]?.index);
 	let columns: Map<PricingColumnName, number> | undefined;
 	let headerCount = 0;
 	let pricingTable: string | undefined;
-	for (const table of extractTables(html)) {
+	for (const table of extractTables(pricingHtml)) {
 		const headerRow = table.match(/<tr[^>]*>.*?<\/tr>/s);
 		const headers = headerRow ? readTableRow(headerRow[0]) : [];
 		// Canonicalize headers via aliases; a candidate must expose every
@@ -194,10 +205,11 @@ export function parseOpenCodeGoPricingTable(html: string): Map<string, OpenCodeG
 		if (duplicateColumns.length > 0) {
 			throw new Error(`OpenCode Go pricing table has duplicate columns for ${duplicateColumns.join(", ")}`);
 		}
+		// Unlabelled competing tables cannot establish which plan owns the allowance.
+		if (pricingTable) throw new Error("OpenCode Go pricing page has ambiguous pricing tables");
 		columns = candidate;
 		headerCount = headers.length;
 		pricingTable = table;
-		break;
 	}
 	if (!pricingTable || !columns) throw new Error("OpenCode Go pricing table not found on the docs page");
 	// The endpoints table supplies the authoritative id for each pricing row;

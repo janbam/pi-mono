@@ -20,7 +20,6 @@ import {
 	buildSystemPromptSections,
 	buildSystemPromptState,
 	diffSystemPromptSections,
-	extensionSectionsFromTranscript,
 } from "../src/core/system-prompt.ts";
 import type { ExtensionFactory } from "../src/index.ts";
 import { createHarness } from "./suite/harness.ts";
@@ -107,18 +106,45 @@ describe("system prompt updates", () => {
 		});
 	});
 
-	test("recovers only extension sections the builder can rebuild byte-identically", () => {
-		const built = buildSystemPromptSections({
-			cwd: "/tmp",
-			appendSystemPrompt: "Appended.",
-			sections: { plan_mode: "Plan only." },
-		});
-		expect(extensionSectionsFromTranscript(built)).toEqual({ plan_mode: "Plan only." });
-		// Foreign sections (invalid name, unwrapped text) are not reconstructable and stay out.
-		expect(extensionSectionsFromTranscript({ Upper: "<Upper>\nx\n</Upper>", raw: "not wrapped" })).toEqual({});
+	test("a triggered run starts with fresh options and removes sections omitted by its hook", async () => {
+		const startingSections: Record<string, string>[] = [];
+		const extension: ExtensionFactory = (pi) => {
+			pi.on("before_agent_start", (event) => {
+				startingSections.push({ ...event.systemPromptOptions.sections });
+				if (event.messageType === "user") event.systemPromptOptions.sections.plan_mode = "Plan only.";
+			});
+		};
+		const harness = await createHarness({ extensionFactories: [extension] });
+		try {
+			const prompts: string[] = [];
+			harness.setResponses(
+				["first", "done"].map((text) => (context: TranscriptContext) => {
+					prompts.push(getCurrentSystemPrompt(context.messages));
+					return fauxAssistantMessage(text);
+				}),
+			);
+			await harness.session.prompt("one");
+			await harness.session.sendCustomMessage(
+				{ customType: "trigger", content: "continue", display: false },
+				{ triggerTurn: true },
+			);
+
+			// Neither run inherits the prior hook's options; omission removes the durable section.
+			expect(startingSections).toEqual([{}, {}]);
+			expect(prompts[0]).toContain("<plan_mode>\nPlan only.\n</plan_mode>");
+			expect(prompts[1]).not.toContain("<plan_mode>");
+			const patches = harness.session.messages.flatMap((message) =>
+				message.role === "system" ? [message.sections] : [],
+			);
+			expect(patches).toHaveLength(2);
+			expect(patches[1]).toEqual({ plan_mode: null });
+		} finally {
+			harness.cleanup();
+		}
 	});
 
-	test("a triggered run keeps extension sections instead of patching them away", async () => {
+	test("a triggered run reuses unchanged hook-provided sections through its next-turn refresh", async () => {
+		const starts: string[] = [];
 		const extension: ExtensionFactory = (pi) => {
 			pi.registerTool({
 				name: "noop",
@@ -128,6 +154,7 @@ describe("system prompt updates", () => {
 				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 			});
 			pi.on("before_agent_start", (event) => {
+				starts.push(event.messageType);
 				event.systemPromptOptions.sections.mode = "Stay terse.";
 			});
 		};
@@ -144,14 +171,15 @@ describe("system prompt updates", () => {
 				capture(fauxAssistantMessage("done")),
 			]);
 			await harness.session.prompt("one");
-			// No before_agent_start runs here; the tool call forces a next-turn prompt refresh.
+			// The triggered run reruns the hook; its tool call then forces a next-turn prompt refresh.
 			await harness.session.sendCustomMessage(
 				{ customType: "trigger", content: "continue", display: false },
 				{ triggerTurn: true },
 			);
 			expect(requests).toHaveLength(3);
 
-			// The section survives every request, and the refresh emits no removal patch.
+			expect(starts).toEqual(["user", "custom"]);
+			// Identical hook output survives every request without a removal or redundant patch.
 			for (const request of requests) {
 				expect(getCurrentSystemPrompt(request.messages)).toContain("<mode>\nStay terse.\n</mode>");
 			}

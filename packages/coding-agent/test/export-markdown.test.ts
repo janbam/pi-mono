@@ -6,7 +6,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { createToolTextRenderer, type ToolTextRenderer } from "../src/core/export-html/tool-renderer.ts";
-import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import type { ToolDefinition, ToolRenderers } from "../src/core/extensions/types.ts";
 import { exportSessionToMarkdown, formatConversationAsMarkdown } from "../src/core/session-export.ts";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -164,7 +164,7 @@ describe("Markdown conversation export", () => {
 			renderResult: (_result, options) => new Text(options.expanded ? "verbose result" : "concise result", 0, 0),
 		};
 		const renderer = createToolTextRenderer({
-			getToolDefinition: () => tool,
+			getToolRenderers: () => tool,
 			theme,
 			cwd: process.cwd(),
 		});
@@ -185,7 +185,7 @@ describe("Markdown conversation export", () => {
 			renderResult: () => new Text("", 0, 0),
 		};
 		const renderer = createToolTextRenderer({
-			getToolDefinition: () => tool,
+			getToolRenderers: () => tool,
 			theme,
 			cwd: process.cwd(),
 		});
@@ -214,7 +214,8 @@ describe("Markdown conversation export", () => {
 		initTheme("dark");
 		const bash = createBashToolDefinition(process.cwd());
 		const renderer = createToolTextRenderer({
-			getToolDefinition: () => bash as unknown as ToolDefinition,
+			// The export boundary resolves renderer-only tools without retaining their parameter schema.
+			getToolRenderers: () => bash as unknown as ToolRenderers,
 			theme,
 			cwd: process.cwd(),
 		});

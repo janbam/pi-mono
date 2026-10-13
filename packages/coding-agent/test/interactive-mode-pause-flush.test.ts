@@ -95,13 +95,14 @@ describe("InteractiveMode pause-parked message flush", () => {
 			isShuttingDown: false,
 			shutdownRequested: false,
 			footer: { invalidate: vi.fn() },
+			programStatus: { handleEvent: vi.fn() },
 			showTurnUsage: vi.fn(),
 			handlePauseSettled: handlePauseSettledSpy,
 			checkShutdownRequested: Reflect.get(InteractiveMode.prototype, "checkShutdownRequested"),
 		};
 
 		// prompt() issued during the dispatch would be deferred and could not be awaited or caught.
-		await handleEvent.call(context, { type: "agent_settled" });
+		await handleEvent.call(context, { type: "agent_settled", aborted: false });
 		expect(handlePauseSettledSpy).not.toHaveBeenCalled();
 
 		await new Promise((resolve) => setImmediate(resolve));
