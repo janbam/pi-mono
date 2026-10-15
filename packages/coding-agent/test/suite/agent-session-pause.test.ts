@@ -1,5 +1,10 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import {
+	fauxAssistantMessage,
+	fauxToolCall,
+	getCurrentSystemMessage,
+	getCurrentSystemPrompt,
+} from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
@@ -292,6 +297,42 @@ describe("AgentSession pause at turn boundary", () => {
 
 		expect(harness.session.isPaused).toBe(false);
 		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("preserves structured prompt sections when turn_end aborts an active run after a successful tool result", async () => {
+		let abortRequested = false;
+		const harness = await createHarness({
+			tools: [echoTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", (event) => {
+						event.systemPromptOptions.sections.active_abort_sentinel = "Keep this run's instructions.";
+					});
+					pi.on("turn_end", (event, ctx) => {
+						if (event.toolResults.some((result) => result.toolName === "echo" && !result.isError)) {
+							abortRequested = true;
+							// Request abort without awaiting settlement inside the awaited turn boundary.
+							ctx.abort();
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		scriptToolTurnThenDone(harness);
+
+		await harness.session.prompt("start");
+
+		expect(abortRequested).toBe(true);
+		expect(harness.eventsOfType("agent_settled")).toEqual([{ type: "agent_settled", aborted: true }]);
+		// Replay persisted messages rather than trusting the live run's prompt options.
+		const replayed = harness.sessionManager.buildSessionContext().messages;
+		expect(getCurrentSystemMessage(replayed)?.sections?.active_abort_sentinel).toBe(
+			"<active_abort_sentinel>\nKeep this run's instructions.\n</active_abort_sentinel>",
+		);
+		expect(
+			replayed.some((message) => message.role === "system" && message.sections?.active_abort_sentinel === null),
+		).toBe(false);
 	});
 
 	it("retries a transient error hit after resuming from a pause", async () => {
