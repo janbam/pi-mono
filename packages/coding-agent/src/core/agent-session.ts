@@ -2746,7 +2746,8 @@ export class AgentSession {
 	async abort(): Promise<void> {
 		// A hard abort supersedes any pending or held pause.
 		this._pauseRequested = false;
-		this._discardHeldPause();
+		// Active-run prompt state must survive until settlement; only discard a held pause here.
+		if (this._pausedResumable) this._discardHeldPause();
 		if (this._isAgentRunActive) {
 			this._agentRunAbortRequested = true;
 		}
