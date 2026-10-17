@@ -49,6 +49,8 @@ Implementation:
 - Fetch + override wiring in the OpenCode variant loop: `packages/ai/scripts/generate-models.ts` (`fetchOpenCodeGoPricing`, `opencodeGoPricing`, `goPricingRow`)
 - Tests: `packages/ai/test/opencode-go-pricing.test.ts` (parser units, cost scaling, strict generator integration with mocked fetches)
 
+Merge note: v1.3.0 moves OpenCode endpoints to `/inference` and `/inference/go`. The fork retains upstream's API selection, including Gemini's Google API and MiniMax's Anthropic API, while applying Go pricing only to costs. The GLM Chat Completions override still emits z-ai thinking fields without `clear_thinking`.
+
 ## /tree: Enter navigates directly, tab opens the summary menu
 
 Upstream behavior: confirming a navigation target in `/tree` always prompts "Summarize branch?" (No summary / Summarize / Summarize with custom prompt) unless the `branchSummary.skipPrompt` setting suppresses it.
@@ -102,6 +104,8 @@ The same normalization applies to the public Pi compatibility API and Models imp
 Merge note: v0.99.1 adds mixed chat, image, and classifier catalogs. Chat validation runs before fork reasoning normalization. Virtual one-off requests route first, then normalize against the physical model's metadata.
 
 Merge note: v1.0.0 moves the harness tests into `packages/durable`. Its compaction tests assert that the session thinking level reaches summary requests, so the fixture model in `packages/durable/test/harness-compaction.test.ts` declares `reasoning: true`; the faux default (`reasoning: false`) is clamped to `off` by the fork.
+
+Merge note: v1.3.0 moves Kimi Coding to Chat Completions. The fork still clamps omitted and explicit `off` reasoning to supported metadata before encoding: K3 sends its lowest effort, while Highspeed keeps thinking enabled without an effort field. `packages/ai/test/models-simple-reasoning.test.ts` covers both payloads.
 
 Implementation:
 
@@ -218,7 +222,7 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 - Interactive mode prints a turn-usage line (uncached input, output, cache read, cache write, cost) after every foreground run, including tool-reported usage and excluding compaction. `interactive-mode.ts` (`showTurnUsage`), test `test/interactive-mode-turn-usage.test.ts`.
 - Transcript rendering orders entries chronologically, so the latest `[compaction]` box sits after the kept tail on resume and rebuild instead of being hoisted to the top (upstream renders `buildContextEntries()` in model-context order, which prepends the compaction). All render paths (initial render, chat rebuild, both live compaction handlers) share `buildTranscriptEntries()` in `interactive-mode.ts`; model context is unchanged. Test `test/interactive-mode-compaction.test.ts`.
 - Shift+Enter under tmux: `matchesKey`/`parseKey` treat legacy `\x1b\r` and `\n` as shift+enter regardless of Kitty protocol state (upstream only does so while Kitty is active and otherwise reads `\x1b\r` as alt+enter and `\n` as enter). `packages/tui/src/keys.ts`.
-- `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and matching `@earendil-works/*` ranges, or npm installs a nested published copy.
+- `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and exact matching `@earendil-works/*` dependency versions, or npm installs a nested published copy.
 - Durable test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for conformance cases that close and reopen SQLite after every commit. Assertions and production behavior are unchanged. `packages/durable/vitest.config.ts` (upstream v1.0.0 removed `packages/session-backends/sqlite-node`).
 
 ## Fullscreen mouse-wheel scrolling has a configurable step

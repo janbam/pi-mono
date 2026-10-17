@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ExtensionShortcutTreeSelection } from "../../../core/extensions/types.ts";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
+import { formatReadLineRange } from "../../../core/tools/render-utils.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { formatKeyText, keyHint } from "./keybinding-hints.ts";
@@ -964,15 +965,7 @@ class TreeList implements Component {
 		switch (name) {
 			case "read": {
 				const path = shortenPath(String(args.path || args.file_path || ""));
-				const offset = args.offset as number | undefined;
-				const limit = args.limit as number | undefined;
-				let display = path;
-				if (offset !== undefined || limit !== undefined) {
-					const start = offset ?? 1;
-					const end = limit !== undefined ? start + limit - 1 : "";
-					display += `:${start}${end ? `-${end}` : ""}`;
-				}
-				return `[read: ${display}]`;
+				return `[read: ${path}${formatReadLineRange(args.offset, args.limit)}]`;
 			}
 			case "write": {
 				const path = shortenPath(String(args.path || args.file_path || ""));
