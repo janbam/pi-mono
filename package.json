@@ -73,5 +73,14 @@
 	"version": "0.0.3",
 	"overrides": {
 		"protobufjs": "7.6.6"
+	},
+	"allowScripts": {
+		"autoevals@0.3.0": true,
+		"canvas@3.2.3": true,
+		"cpu-features@0.0.10": true,
+		"esbuild@0.28.2": true,
+		"protobufjs@7.6.6": true,
+		"ssh2@1.17.0": true,
+		"@google/genai@2.21.0": true
 	}
 }
