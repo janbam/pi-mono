@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { streamSimple } from "../src/compat.ts";
 import { resolveModelSimpleStreamOptions } from "../src/models.ts";
 import { getBuiltinModel } from "../src/providers/all.ts";
 import type { Api, Model } from "../src/types.ts";
@@ -34,6 +35,58 @@ describe("model-aware simple reasoning", () => {
 
 		expect(resolveModelSimpleStreamOptions(mercury, { reasoning: "off" })).toEqual({ reasoning: "low" });
 	});
+
+	it.each([undefined, "off"] as const)(
+		"sends Kimi K3's lowest Chat Completions effort for %s reasoning",
+		async (reasoning) => {
+			let payload: unknown;
+
+			// Capture the normalized wire request before any network call.
+			await streamSimple(
+				getBuiltinModel("kimi-coding", "k3"),
+				{
+					messages: [{ role: "user", content: "Hello", timestamp: 0 }],
+				},
+				{
+					apiKey: "fake-key",
+					reasoning,
+					onPayload: (value) => {
+						payload = value;
+						throw new Error("payload captured");
+					},
+				},
+			).result();
+
+			expect(payload).toMatchObject({ model: "k3", reasoning_effort: "low" });
+			expect(payload).not.toHaveProperty("thinking");
+		},
+	);
+
+	it.each([undefined, "off"] as const)(
+		"keeps Kimi Highspeed thinking enabled without effort for %s reasoning",
+		async (reasoning) => {
+			let payload: unknown;
+
+			// Highspeed uses a thinking toggle, not K3's effort vocabulary.
+			await streamSimple(
+				getBuiltinModel("kimi-coding", "kimi-for-coding-highspeed"),
+				{
+					messages: [{ role: "user", content: "Hello", timestamp: 0 }],
+				},
+				{
+					apiKey: "fake-key",
+					reasoning,
+					onPayload: (value) => {
+						payload = value;
+						throw new Error("payload captured");
+					},
+				},
+			).result();
+
+			expect(payload).toMatchObject({ thinking: { type: "enabled" } });
+			expect(payload).not.toHaveProperty("reasoning_effort");
+		},
+	);
 
 	it("omits reasoning when the model supports switching thinking off", () => {
 		const options = resolveModelSimpleStreamOptions(model(true), { reasoning: "off", maxTokens: 80 });

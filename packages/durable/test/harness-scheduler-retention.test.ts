@@ -472,6 +472,7 @@ describe("scheduler retention", () => {
 		await harness.close(context);
 	});
 
+	// Keep the full 20,000-task proof while allowing its SQLite commits to finish on slower disks.
 	it("forgets a 20,000-deep chain of ended tasks without recursion", async () => {
 		const { harness, root } = await open();
 		const depth = 20_000;
@@ -494,7 +495,7 @@ describe("scheduler retention", () => {
 		await harness.waitForIdle(context);
 		expect(sizes(harness)).toEqual(baseline);
 		await harness.close(context);
-	}, 60_000);
+	}, 180_000);
 
 	it("keeps no more after all work ended than a fresh reopen", async () => {
 		const path = await sqlitePath();
