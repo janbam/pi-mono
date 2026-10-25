@@ -107,6 +107,8 @@ Merge note: v1.0.0 moves the harness tests into `packages/durable`. Its compacti
 
 Merge note: v1.3.0 moves Kimi Coding to Chat Completions. The fork still clamps omitted and explicit `off` reasoning to supported metadata before encoding: K3 sends its lowest effort, while Highspeed keeps thinking enabled without an effort field. `packages/ai/test/models-simple-reasoning.test.ts` covers both payloads.
 
+Merge note: v1.4.0 adds model-request telemetry. Telemetry retains the requested thinking level; provider dispatch still receives the fork's model-normalized level.
+
 Implementation:
 
 - Model-aware options and shared normalization: `packages/ai/src/types.ts`, `packages/ai/src/models.ts`
@@ -152,6 +154,8 @@ Fork behavior:
 Merge note: fork request options carry the unresolved Pi thinking level (`ModelsSimpleStreamOptions`, see model-aware requests above), so `CacheWarmer`'s helpers accept that type and `isReplayable` judges the clamped level. The constructor takes a policy getter (`{ mode, maxAgeMs }`) instead of upstream's mode getter, plus an optional request-rebuild function.
 
 Virtual-model selections are not warmed or restored. Upstream's current-context policy rejects their routed physical requests; transcript restore also skips them so a replay cannot route to a different model.
+
+Merge note: v1.4.0 centralizes provider attribution in the client identity. Live and restored warm requests both use the shared request-options builder so the fork's replay path retains upstream's identity policy.
 
 Implementation:
 
@@ -218,12 +222,14 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 - Status messages retain their own text across theme redraws. Upstream v0.99.1 rebuilds every status from one shared latest-message field, which rewrites older transcript statuses. The fork snapshots each message and replaces only immediately consecutive status rows. `packages/coding-agent/src/modes/interactive/interactive-mode.ts` (`showStatus`), tested in `test/interactive-tui.test.ts`.
 - GitHub Copilot's Claude Opus 5.5 catalog entry keeps `off` and `minimal` thinking unavailable even after models.dev lists the model. The generator applies the restriction to both upstream and fallback entries: `packages/ai/scripts/generate-models.ts` (`GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES`), tested in `packages/ai/test/github-copilot-anthropic.test.ts`.
 - `--log-api-requests <file>` writes every outgoing provider request (URL, method, redacted headers, body, status, duration) as JSONL by wrapping global `fetch`, plus every outgoing WebSocket message (`method: "WS"`, e.g. OpenAI Codex's default `auto` transport) by wrapping global `WebSocket`. Amazon Bedrock's node:http transport is not covered. `packages/coding-agent/src/core/api-request-logging.ts`, test `test/api-request-logging.test.ts`.
+- The Node-only WebSocket logger uses explicit Undici types because upstream v1.4.0's IndexedDB source loads DOM globals into the aggregate typecheck. Runtime socket construction and sends are unchanged.
 - `/export <file>.md` exports the visible conversation as Markdown with thinking omitted and tools rendered like interactive mode, including upstream v1.2.0's extension renderer resolvers for unregistered tools. `packages/coding-agent/src/core/session-export.ts` (`exportSessionToMarkdown`), `AgentSession.exportToMarkdown()`, test `test/export-markdown.test.ts`.
 - Interactive mode prints a turn-usage line (uncached input, output, cache read, cache write, cost) after every foreground run, including tool-reported usage and excluding compaction. `interactive-mode.ts` (`showTurnUsage`), test `test/interactive-mode-turn-usage.test.ts`.
 - Transcript rendering orders entries chronologically, so the latest `[compaction]` box sits after the kept tail on resume and rebuild instead of being hoisted to the top (upstream renders `buildContextEntries()` in model-context order, which prepends the compaction). All render paths (initial render, chat rebuild, both live compaction handlers) share `buildTranscriptEntries()` in `interactive-mode.ts`; model context is unchanged. Test `test/interactive-mode-compaction.test.ts`.
 - Shift+Enter under tmux: `matchesKey`/`parseKey` treat legacy `\x1b\r` and `\n` as shift+enter regardless of Kitty protocol state (upstream only does so while Kitty is active and otherwise reads `\x1b\r` as alt+enter and `\n` as enter). `packages/tui/src/keys.ts`.
 - `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and exact matching `@earendil-works/*` dependency versions, or npm installs a nested published copy.
-- Durable test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for conformance cases that close and reopen SQLite after every commit. The 20,000-task retention stress test gets 180 seconds instead of upstream's 60 seconds to accommodate filesystem-backed SQLite commits on slower disks. Task depth, assertions, and production behavior are unchanged. `packages/durable/vitest.config.ts`, `test/harness-scheduler-retention.test.ts` (upstream v1.0.0 removed `packages/session-backends/sqlite-node`).
+- Upstream v1.4.0's Cloudflare worker test tooling pins vulnerable transitive dependencies. Root overrides pin Zod `4.6.5` to `4.6.6` and Undici `7.29.1` to `7.30.1`; unrelated dependency versions remain upstream-owned. Npm 11.11.1 does not propagate these overrides through workspace-only dependency edges, so root dev dependencies repeat the exact existing plugin and Miniflare versions to make npm apply them. Workerd and Bun's real-worker lifetime cases crash with `SIGILL` on this fork's no-AVX development host, so those worker tests require another host and remain unverified here.
+- Durable test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for conformance cases that close and reopen SQLite after every commit. The 20,000-task retention and ownership stress tests get 180 seconds instead of upstream's 60 seconds to accommodate slower hosts. Task depth, assertions, and production behavior are unchanged. `packages/durable/vitest.config.ts`, `test/harness-scheduler-retention.test.ts`, `test/harness-ownership.test.ts` (upstream v1.0.0 removed `packages/session-backends/sqlite-node`).
 
 ## Fullscreen mouse-wheel scrolling has a configurable step
 
@@ -240,7 +246,7 @@ Implementation:
 - Tests: `packages/tui/test/tui-alt-screen.test.ts`, `packages/coding-agent/test/settings-manager.test.ts`, `test/settings-selector.test.ts`, `test/interactive-tui.test.ts`
 - User documentation: `packages/coding-agent/docs/settings.md`
 
-## Known upstream integration limitation (since v0.99.1, still present in v1.0.0)
+## Known upstream integration limitation (since v0.99.1, still present in v1.4.0)
 
 Radius browser sign-in can stall when a failed code exchange is followed immediately by another login. The one-shot shared OAuth callback server sends a keep-alive response, then closes. A pooled client can reuse that closed loopback socket and fail with `UND_ERR_SOCKET`, leaving the new callback waiter pending. The `packages/ai/test/radius-oauth.test.ts` test "exchanges the browser callback code before showing the sign-in page" (failed exchange, then a second login) reproduces this deterministically on Node 24.13.0 and fails `./test.sh`. Keeping upstream's callback-server behavior unchanged was an explicit integration decision. `packages/ai/src/auth/oauth/callback-server.ts`, `packages/ai/src/auth/oauth/radius.ts`.
 

@@ -208,6 +208,22 @@ describe("createRequestLoggingWebSocket", () => {
 		expect(entries[0].durationMs).toBeUndefined();
 	});
 
+	test("forwards shared binary views unchanged and snapshots their logged text", async () => {
+		const entries: ApiRequestLogEntry[] = [];
+		const LoggingSocket = createRequestLoggingWebSocket(fakeSocketBase, capturingLog(entries));
+		const socket = new LoggingSocket("wss://provider.example.com");
+		const bytes = new Uint8Array(new SharedArrayBuffer(5));
+		bytes.set(new TextEncoder().encode("hello"));
+
+		socket.send(bytes);
+		expect((socket as unknown as FakeSocket).sent[0]).toBe(bytes);
+		// Reusing the caller's buffer must not rewrite the already captured log payload.
+		bytes.fill(0);
+
+		await vi.waitFor(() => expect(entries).toHaveLength(1));
+		expect(entries[0]).toMatchObject({ body: "hello", bodyEncoding: "text" });
+	});
+
 	test("logs a failed send with its error and rethrows", async () => {
 		const entries: ApiRequestLogEntry[] = [];
 		const LoggingSocket = createRequestLoggingWebSocket(fakeSocketBase, capturingLog(entries));

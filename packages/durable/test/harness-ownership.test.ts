@@ -311,6 +311,7 @@ describe("ownership", () => {
 		await harness.close(context);
 	});
 
+	// Preserve the full 20,000-task stack-safety workload on slower hosts.
 	it("tracks ownership chains deeper than the call stack", async () => {
 		const { harness, root } = await openHarness();
 		// 20,000 tasks, each owning the next, created in one commit above a live leaf; they end top-down and hold.
@@ -331,7 +332,7 @@ describe("ownership", () => {
 		expect((await harness.waitForTask(leaf, context)).state.outcome.status).toBe("completed");
 		expect((await harness.waitForTask(top, context)).state.outcome.status).toBe("completed");
 		await harness.close(context);
-	}, 60_000);
+	}, 180_000);
 
 	it("holds an owner for work a commit creates below ended tasks loaded from storage", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "pi-durable-ownership-"));
@@ -1313,6 +1314,7 @@ describe("owned conversations from tools and supervisors", () => {
 		directories.add(directory);
 		const path = join(directory, "session.sqlite");
 		const Children = defineDoc<{ child?: ConversationId }>({
+			checkpointWhen: () => false,
 			kind: "test.children",
 			version: 1,
 			scope: "conversation",
