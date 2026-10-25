@@ -17,6 +17,7 @@
 
 import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { WebSocketInit } from "undici";
 
 /** One JSONL record describing an outgoing HTTP request and its outcome. */
 export interface ApiRequestLogEntry {
@@ -184,6 +185,22 @@ export function createRequestLoggingFetch(
 	return wrapped as typeof globalThis.fetch;
 }
 
+/** Binary and text payloads accepted by Node's Undici-backed WebSocket. */
+type NodeWebSocketData = string | ArrayBufferLike | Blob | ArrayBufferView;
+
+/** Constructor options from either active ambient program plus Node's Undici extension. */
+type NodeWebSocketProtocols = ConstructorParameters<typeof globalThis.WebSocket>[1] | WebSocketInit;
+
+/** The ambient socket with Node's broader binary send inputs restored. */
+type NodeWebSocket = InstanceType<typeof globalThis.WebSocket> & {
+	send(data: NodeWebSocketData): void;
+};
+
+/** Node's runtime constructor, with the Node overload first to preserve binary send types. */
+type NodeWebSocketConstructor = {
+	new (url: string | URL, protocols?: NodeWebSocketProtocols): NodeWebSocket;
+} & typeof globalThis.WebSocket;
+
 /**
  * Build a WebSocket constructor that logs every outgoing message through `log` before delegating to `base`.
  * Each `send()` becomes one entry with method "WS", the socket URL, the redacted handshake headers, and the
@@ -192,24 +209,26 @@ export function createRequestLoggingFetch(
 export function createRequestLoggingWebSocket(
 	base: typeof globalThis.WebSocket,
 	log: (entry: ApiRequestLogEntry) => void,
-): typeof globalThis.WebSocket {
+): NodeWebSocketConstructor {
 	return class RequestLoggingWebSocket extends base {
 		readonly #logHeaders: Record<string, string>;
 
-		constructor(url: string | URL, protocols?: string | string[] | WebSocketInit) {
-			super(url, protocols);
+		constructor(url: string | URL, protocols?: NodeWebSocketProtocols) {
+			// Forward Node's runtime options unchanged even when DOM declarations hide the overload.
+			super(url, protocols as ConstructorParameters<typeof globalThis.WebSocket>[1]);
 			// Only the init-object form carries handshake headers; a protocol list has none.
 			const init = typeof protocols === "object" && !Array.isArray(protocols) ? protocols : undefined;
 			this.#logHeaders = redactHeaders(headersToObject(init?.headers as HeadersLike | undefined));
 		}
 
-		override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+		override send(data: NodeWebSocketData): void {
 			// Snapshot the payload before sending: non-Blob bodies are decoded synchronously, so a
 			// caller reusing its buffer after send() cannot alter what gets logged.
 			const captured = captureInitBody(data);
 			let error: string | undefined;
 			try {
-				super.send(data);
+				// Node accepts shared binary buffers even when the ambient DOM signature excludes them.
+				super.send(data as Parameters<InstanceType<typeof globalThis.WebSocket>["send"]>[0]);
 			} catch (sendError: unknown) {
 				error = sendError instanceof Error ? sendError.message : String(sendError);
 				throw sendError;
