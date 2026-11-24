@@ -4,9 +4,10 @@
  */
 
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
+// Namespace import: Bun lacks registerHooks, and a named import would fail to link before any runtime guard.
+import * as nodeModule from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Provider } from "@earendil-works/pi-ai";
 import { mcpNamespace } from "@earendil-works/pi-mcp";
 import type { KeyId } from "@earendil-works/pi-tui";
@@ -42,7 +43,7 @@ import type {
 	ToolRendererResolver,
 } from "./types.ts";
 
-const require = createRequire(import.meta.url);
+const require = nodeModule.createRequire(import.meta.url);
 
 const isNodeSeaBinary =
 	("sea" in process.features && process.features.sea === true) ||
@@ -67,7 +68,7 @@ function getVirtualModules(): Promise<Record<string, unknown>> {
 }
 
 /**
- * Get aliases for jiti (used in built Node.js mode).
+ * Get aliases for jiti and the native resolve hook (used in built Node.js mode).
  * In compiled binary mode, virtualModules is used instead.
  */
 let _aliases: Record<string, string> | null = null;
@@ -132,6 +133,49 @@ function getAliases(): Record<string, string> {
 	};
 
 	return _aliases;
+}
+
+/** Whether the process-wide native alias hook is installed. Node resolve hooks stay active for the process lifetime. */
+let nativeAliasHookRegistered = false;
+
+/**
+ * Make Node's native resolver apply the Pi package aliases that jiti applies.
+ *
+ * jiti hands `.js` files in `"type": "module"` packages to Node's native importer, which resolves their imports
+ * itself and never sees jiti's `alias`. An extension with a nested `@earendil-works/*` copy would then construct
+ * objects from duplicate classes (e.g. `CustomEditor`), losing the host's identity checks and key routing.
+ *
+ * Once registered, the hook is process-global: Node caches modules per URL, so importer-scoped ownership cannot be
+ * leak-free. Every non-host importer in the process therefore gets the Pi package aliases, including an extension's
+ * private dependencies and, for SDK consumers, unrelated application code. This is accepted because Pi packages are
+ * meant to be host singletons.
+ */
+function registerNativeAliasHook(): void {
+	if (nativeAliasHookRegistered) return;
+	nativeAliasHookRegistered = true;
+
+	// Rewrite Pi packages only. TypeBox stays resolvable per extension because extensions legitimately pin it.
+	const targets = new Map<string, string>();
+	for (const [specifier, target] of Object.entries(getAliases())) {
+		if (specifier.startsWith("@earendil-works/") || specifier.startsWith("@mariozechner/")) {
+			targets.set(specifier, pathToFileURL(canonicalizePath(target)).href);
+		}
+	}
+	// Host runtime modules live beside the alias targets; Node reports them by canonical URL.
+	const hostDirectories = [...new Set([...targets.values()].map((url) => new URL(".", url).href))];
+
+	nodeModule.registerHooks({
+		resolve(specifier, context, nextResolve) {
+			const target = targets.get(specifier);
+			// Host modules resolve normally, so alias targets such as the pi-ai extension view reach the packages they wrap.
+			const parent = context.parentURL;
+			if (!target || (parent && hostDirectories.some((directory) => parent.startsWith(directory)))) {
+				return nextResolve(specifier, context);
+			}
+			// CommonJS resolves paths, not URLs, so CJS extensions get host copies as well.
+			return nextResolve(context.conditions.includes("require") ? fileURLToPath(target) : target, context);
+		},
+	});
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
@@ -629,6 +673,8 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
 		: isTypeScriptSourceRuntime
 			? { virtualModules: await getVirtualModules(), tsconfigPaths: true }
 			: { alias: getAliases() };
+	// jiti's alias misses native ESM it hands to Node, so unbundled Node also aliases in Node's resolver.
+	if (!usesEmbeddedModules && !isTypeScriptSourceRuntime && !process.versions.bun) registerNativeAliasHook();
 	const jiti = createJitiImpl(import.meta.url, {
 		moduleCache: false,
 		...resolutionOptions,
