@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import {
 	getOpenCodeGoUsageAdjustedCost,
 	OPENCODE_GO_PRICING_URL,
-	parseOpenCodeGoPricingTable,
+	parseOpenCodeGoPricing,
 	type OpenCodeGoPricingRow,
 } from "./opencode-go-pricing.ts";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
@@ -1810,17 +1810,19 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 }
 
 /**
- * JANBAM fork mod: fetch the OpenCode Go pricing table. Strict mode treats any
+ * JANBAM fork mod: fetch the OpenCode Go model list for pricing. Strict mode treats any
  * failure as a build error; non-strict runs keep models.dev costs for the
  * provider instead.
  */
 async function fetchOpenCodeGoPricing(): Promise<Map<string, OpenCodeGoPricingRow>> {
 	try {
+		// Parse the public model catalog before any rates reach the generator.
 		console.log("Fetching OpenCode Go pricing from", OPENCODE_GO_PRICING_URL);
 		const response = await fetch(OPENCODE_GO_PRICING_URL);
-		if (!response.ok) throw new Error(`OpenCode Go docs returned ${response.status}`);
-		return parseOpenCodeGoPricingTable(await response.text());
+		if (!response.ok) throw new Error(`OpenCode Go model list returned ${response.status}`);
+		return parseOpenCodeGoPricing(await response.json());
 	} catch (error) {
+		// Only non-strict generation may continue with nominal models.dev costs.
 		console.error("Failed to fetch OpenCode Go pricing:", error);
 		if (generatorOptions.strict) throw error;
 		return new Map();
@@ -2385,19 +2387,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
-				// JANBAM fork mod: opencode-go costs come from the Go pricing page,
-				// scaled by usage allowance, instead of models.dev's nominal prices.
-				// The pricing table is keyed by the page's authoritative model ids
-				// (endpoints table), so the lookup is an exact id match — display
-				// names can diverge from ids ("DeepSeek V4.1 Flash" is served as
-				// "deepseek-flash"). The provider gate matters: Zen can carry the
-				// same model id (e.g. grok-4.6), which must never match a Go pricing
-				// row. A model missing from the page keeps its models.dev cost so the
-				// catalog never loses a model over pricing.
+				// Apply usage-adjusted pricing by exact endpoint ID, only within Go.
+				// Models missing from the official list keep their models.dev costs.
 				const isGoVariant = variant.provider === "opencode-go";
 				const goPricingRow = isGoVariant ? opencodeGoPricing.get(modelId) : undefined;
 				if (isGoVariant && !goPricingRow) {
-					console.warn(`OpenCode Go pricing page has no row for ${modelId}; keeping models.dev cost`);
+					console.warn(`OpenCode Go pricing catalog has no row for ${modelId}; keeping models.dev cost`);
 				}
 
 				let thinkingLevelMap: NonNullable<Model<Api>["thinkingLevelMap"]> | undefined;

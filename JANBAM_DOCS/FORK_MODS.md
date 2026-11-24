@@ -30,22 +30,24 @@ Implementation:
 - Tests: `packages/coding-agent/test/session-manager/session-state.test.ts`, `test/extensions-runner.test.ts`, `test/suite/agent-session-runtime.test.ts`
 - Docs and example: `packages/coding-agent/docs/extensions.md`, `docs/session-format.md`, `docs/sessions.md`, `examples/extensions/session-state.ts`
 
-## OpenCode Go model costs come from the Go pricing page, scaled by usage allowance
+## OpenCode Go model costs use official prices scaled by usage allowance
 
-Upstream behavior: opencode-go model costs are models.dev's nominal per-1M prices (which also drop the page's context-tier and Peak/Off-Peak rows, and can lag the docs page).
+Upstream behavior: opencode-go model costs are models.dev's nominal per-million-token prices.
 
-Fork behavior: during model generation, the generator fetches https://opencode.ai/v2/docs/console/go/ (the official replacement for the removed `/docs/go/` route), selects the standard `Go` plan panel rather than `Go Plus`, and locates the pricing table by its header row (Model / Input / Output / Cached Read / Cached Write / Usage — with header names driving per-row column indexing; headers are matched through a canonical-name alias table, e.g. the page's Sep 2026 rewording "Usage" → "Monthly limit" and "Cached Read/Write" → "Cache Read/Write" stay compatible, while unknown wordings still fail the build). It also parses the page's endpoints table (Model / Model ID / Endpoint / AI SDK Package) as the authoritative display-name → model-id mapping and keys every pricing row by that model id, so models.dev entries match by exact id — display names can diverge from ids (the pricing row "DeepSeek V4.1 Flash" is served as model id `deepseek-flash`, which name normalization alone cannot join). It then replaces every opencode-go cost with the page's base-row prices (plain, "≤ N tokens", or Off-Peak — Peak rows are dropped since the catalog schema has one cost per model) scaled by `60 / usage-allowance`. The multiplier normalizes per-token cost to how fast a model drains its monthly allowance: $60-usage models keep the nominal price, $30-usage models double, $15-usage models quadruple (e.g. grok-4.6 input $2 → $8, GLM-5.3 $1.40 → $5.60). The usage column is authoritative for every model — per-model annotations elsewhere (e.g. models.dev's "(2x usage)" naming for GLM-5.3-Flash) are deliberately ignored, no special cases. Promo and price-change cells decode generically: struck-through (`<del>`/`<s>`) values are dropped as superseded, the leading standalone number wins over trailing annotations ("$60 4x · Ends Sep 20" → 60, while digit-fused junk like "4x" still fails the build), and word cells "Free"/"Unlimited" mean zero marginal cost, with an "Unlimited" monthly limit scaling the model's prices to 0 for the promo's duration (e.g. Union Alpha Free, Sep 2026).
+Fork behavior: the generator fetches [OpenCode's public Go model list](https://opencode.ai/inference/go/v1/models), which replaced the tables in the [Go docs](https://opencode.ai/docs/console/go/). It matches rows to models.dev by exact endpoint ID and scales the base text rates by `60 / go.monthly_usage.go`. The allowance is for standard Go, not Go Plus or Go Teams. A $60 allowance keeps the nominal price, a $30 allowance doubles it, and a $15 allowance quadruples it. An explicit `null` monthly usage record denotes an unlimited promotion and scales prices to zero.
+
+The override applies date-only multipliers active on the UTC generation date to the base text rates. It ignores context tier overrides and peak multipliers based on UTC hours or days of the week. Unknown multiplier conditions fail strict generation. Cache-write pricing follows the Console's base pricing row: a scalar rate or the `5m` rate, then `30m`, then the first rate other than `12h`.
 
 Scope and guards:
 
 - Only the `opencode-go` provider; `opencode` (Zen) keeps models.dev costs.
-- A registered model with no page row keeps its models.dev cost (warned in generator output) so the catalog never loses a model over pricing.
-- Strict generator runs fail the build if the page is unreachable or the table cannot be found/parsed; non-strict runs fall back to models.dev costs.
-- The pricing fetch only happens when the models.dev catalog actually lists opencode-go models, so fetch-mocked generator tests never see it.
+- A registered model absent from the official list keeps its models.dev cost and emits a warning.
+- Strict generation fails if the endpoint is unreachable or returns invalid pricing. Non-strict generation falls back to models.dev costs.
+- The generator fetches pricing only when models.dev lists opencode-go models.
 
 Implementation:
 
-- Pure parser, name normalizer, and usage-scaling cost helper: `packages/ai/scripts/opencode-go-pricing.ts`
+- JSON parser and usage-scaling cost helper: `packages/ai/scripts/opencode-go-pricing.ts`
 - Fetch + override wiring in the OpenCode variant loop: `packages/ai/scripts/generate-models.ts` (`fetchOpenCodeGoPricing`, `opencodeGoPricing`, `goPricingRow`)
 - Tests: `packages/ai/test/opencode-go-pricing.test.ts` (parser units, cost scaling, strict generator integration with mocked fetches)
 
