@@ -100,6 +100,9 @@ describe("builtin providers", () => {
 			supportsOpenAIGrammarTools: true,
 		});
 		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").compat?.supportsStrictTools).toBe(true);
+		const copilotClaude = getBuiltinModels("github-copilot").filter((model) => model.api === "anthropic-messages");
+		expect(copilotClaude.length).toBeGreaterThan(0);
+		for (const model of copilotClaude) expect(model.compat).toMatchObject({ supportsStrictTools: true });
 	});
 
 	it("keeps the conservative resize profile on every vision model", () => {
@@ -192,7 +195,7 @@ describe("builtin providers", () => {
 			["openrouter", "openai/gpt-5.6-terra"],
 		] as const;
 		const unsupported = [
-			["fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"],
+			["fireworks", "accounts/fireworks/models/deepseek-v4p1-flash"],
 			["openai", "gpt-4.1"],
 			["openai", "gpt-5.2"],
 			["anthropic", "claude-sonnet-4-5"],

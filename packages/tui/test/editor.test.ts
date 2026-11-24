@@ -2132,6 +2132,36 @@ describe("Editor component", () => {
 	});
 
 	describe("Autocomplete", () => {
+		it("moves the autocomplete selection with selection page keys (#7629)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			let submitted = "";
+			editor.onSubmit = (text) => {
+				submitted = text;
+			};
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({
+					items: Array.from({ length: 12 }, (_, index) => ({
+						value: `/command-${index}`,
+						label: `command-${index}`,
+					})),
+					prefix: "/",
+				}),
+				applyCompletion,
+			});
+
+			assert.strictEqual(editor.capturesViewportInput, false);
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.strictEqual(editor.capturesViewportInput, true);
+
+			editor.handleInput("\x1b[6~");
+			editor.handleInput("\x1b[6~");
+			editor.handleInput("\x1b[5~");
+			editor.handleInput("\r");
+
+			assert.strictEqual(submitted, "/command-5");
+		});
+
 		it("triggers and debounces symbol completion after CJK punctuation", async (t) => {
 			t.mock.timers.enable({ apis: ["setTimeout"] });
 			for (const before of [
@@ -2259,6 +2289,75 @@ describe("Editor component", () => {
 				assert.strictEqual(editor.getText(), `${before}文档/说明.md`);
 				assert.deepStrictEqual(editor.getCursor(), { line: 0, col: editor.getText().length });
 			}
+		});
+
+		// Regression test for #12309: Enter on a Tab menu for an absolute path submitted the prompt.
+		it("Enter on a Tab path menu with a / prefix completes without submitting", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const submitted: string[] = [];
+			editor.onSubmit = (text) => submitted.push(text);
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({
+					items: [
+						{ value: "/tmp/x/file-one.md", label: "file-one.md" },
+						{ value: "/tmp/x/file-two.md", label: "file-two.md" },
+					],
+					prefix: "/tmp/x/fi",
+				}),
+				applyCompletion,
+			});
+			editor.setText("look at /tmp/x/fi");
+
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			editor.handleInput("\r");
+
+			assert.deepStrictEqual(submitted, []);
+			assert.strictEqual(editor.getText(), "look at /tmp/x/file-one.md");
+		});
+
+		it("Enter on an argument menu with a / prefix completes without submitting", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const submitted: string[] = [];
+			editor.onSubmit = (text) => submitted.push(text);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(
+					[
+						{
+							name: "open",
+							getArgumentCompletions: (prefix) =>
+								prefix.startsWith("/") ? [{ value: "/tmp/alpha", label: "alpha" }] : null,
+						},
+					],
+					process.cwd(),
+				),
+			);
+
+			for (const char of "/open /tm") editor.handleInput(char);
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			editor.handleInput("\r");
+
+			assert.deepStrictEqual(submitted, []);
+			assert.strictEqual(editor.getText(), "/open /tmp/alpha");
+		});
+
+		it("Enter on a Tab slash command menu submits the command", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const submitted: string[] = [];
+			editor.onSubmit = (text) => submitted.push(text);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([{ name: "model" }, { name: "session" }], process.cwd()),
+			);
+			editor.setText("/mo");
+
+			editor.handleInput("\t");
+			await flushAutocomplete();
+			assert.strictEqual(editor.isShowingAutocomplete(), true);
+			editor.handleInput("\r");
+
+			assert.deepStrictEqual(submitted, ["/model"]);
 		});
 
 		it("ends unquoted trigger and debounce contexts at whitespace or CJK punctuation", async (t) => {
@@ -4002,6 +4101,27 @@ describe("Editor component", () => {
 			editor.handleInput("\x7f"); // delete marker #1, renumber #3 -> #2 and #2 -> #1
 			editor.handleInput("\r");
 			assert.strictEqual(submitted, pasteC + pasteB);
+		});
+
+		// Regression test for #11923
+		it("renumbers short paste markers without a size suffix", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			let submitted = "";
+			editor.onSubmit = (t) => {
+				submitted = t;
+			};
+
+			const pasteA = bigPaste("alpha");
+			const pasteB = bigPaste("beta");
+			editor.handleInput(`\x1b[200~${pasteA}\x1b[201~`); // #1 = A
+			editor.handleInput(`\x1b[200~${pasteB}\x1b[201~`); // #2 = B
+			editor.handleInput("\x15"); // Ctrl+U clears the line, registry stays
+			for (const ch of "[paste #1][paste #2]") editor.handleInput(ch);
+			editor.handleInput("\x1b[D"); // left over marker #2
+			editor.handleInput("\x7f"); // delete marker #1, renumber #2 -> #1
+			assert.strictEqual(editor.getText(), "[paste #1]");
+			editor.handleInput("\r");
+			assert.strictEqual(submitted, pasteB);
 		});
 
 		it("undo after setText restores paste markers and registry", () => {

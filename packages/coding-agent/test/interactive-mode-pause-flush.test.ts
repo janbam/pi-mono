@@ -97,6 +97,8 @@ describe("InteractiveMode pause-parked message flush", () => {
 			footer: { invalidate: vi.fn() },
 			programStatus: { handleEvent: vi.fn() },
 			showTurnUsage: vi.fn(),
+			flushPendingBashComponents: vi.fn(),
+			ui: { requestRender: vi.fn() },
 			handlePauseSettled: handlePauseSettledSpy,
 			checkShutdownRequested: Reflect.get(InteractiveMode.prototype, "checkShutdownRequested"),
 		};

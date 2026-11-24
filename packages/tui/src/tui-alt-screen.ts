@@ -80,8 +80,9 @@ const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES = 64 * 1024 * 1024;
 const DOUBLE_CLICK_INTERVAL_MS = 500;
 const COPY_ERROR_FLASH_DURATION_MS = 5000;
 // Regular mode delegates double-click selection to the terminal emulator. Fullscreen owns mouse selection,
-// so mirror common terminal word-selection behavior by keeping paths and kebab-case tokens whole.
-const TERMINAL_WORD_SELECTION_JOINERS = new Set(["/", "-"]);
+// so it uses iTerm2's default "characters considered part of a word" set:
+// https://github.com/gnachman/iTerm2/blob/7f4ff739721f95d0b93003d8701c4523a7edf261/sources/Settings/iTermPreferences.m#L743
+const TERMINAL_WORD_SELECTION_JOINERS = new Set(["/", "-", "+", "\\", "~", "_", "."]);
 const wordSegmenter = getWordSegmenter();
 
 interface CachedKittyImage {
@@ -331,7 +332,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.requestRender();
 	}
 
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		return this.layoutRoot?.render(width) ?? super.render(width);
 	}
 
@@ -501,17 +502,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	scrollBy(lines: number): void {
 		this.getPrimaryScrollView().scrollBy(lines);
-		this.requestRender();
+		this.requestViewRender();
 	}
 
 	scrollToTop(): void {
 		this.getPrimaryScrollView().scrollToStart();
-		this.requestRender();
+		this.requestViewRender();
 	}
 
 	scrollToBottom(): void {
 		this.getPrimaryScrollView().scrollToEnd();
-		this.requestRender();
+		this.requestViewRender();
 	}
 
 	private scrollToPrompt(direction: -1 | 1): void {
@@ -523,7 +524,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
 			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
 			scrollView.scrollTo(row);
-			this.requestRender();
+			this.requestViewRender();
 			return;
 		}
 	}
@@ -677,7 +678,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes.flash(message, durationMs);
 	}
 
-	private shouldDeferViewportInputToOverlay(): boolean {
+	/** Focused overlays and components that capture viewport input receive viewport keys instead of the transcript. */
+	private shouldDeferViewportInput(): boolean {
+		if (this.getFocusedComponent()?.capturesViewportInput) return true;
 		return this.isOverlayFocused() && this.activeSearch?.overlay?.isFocused() !== true;
 	}
 
@@ -756,7 +759,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				return { consume: true };
 			}
 		}
-		if (this.shouldDeferViewportInputToOverlay()) return undefined;
+		if (this.shouldDeferViewportInput()) return undefined;
 		if (keybindings.matches(data, "tui.altScreen.pageUp")) {
 			if (!isRelease) {
 				this.scrollBy(-Math.max(1, this.getPrimaryScrollView().viewportHeight - PAGE_SCROLL_OVERLAP));
@@ -1012,7 +1015,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const primary = this.getPrimaryScrollView();
 		if (remaining !== 0 && !seen.has(primary)) primary.scrollBy(remaining);
 		this.updateScrollbarHover(event.x, event.y);
-		this.requestRender();
+		// Scrolling moves the viewport only. Reusing the previous component output keeps a wheel
+		// frame O(viewport); re-rendering a long transcript on every wheel event saturated a core.
+		this.requestViewRender();
 	}
 
 	private parseSgrMouseEvent(data: string): SgrMouseEvent | undefined {
@@ -1317,7 +1322,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const point = this.getScrollSelectionPoint(scrollView, pointer.x, pointer.y);
 		if (point) this.updateSelectionFocus(point);
-		this.requestRender();
+		// Selection is painted onto the screen after layout, so it needs no new component output.
+		this.requestViewRender();
 	}
 
 	private stopSelectionAutoScroll(): void {
@@ -1692,9 +1698,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		const root = this.layoutRoot ?? this.implicitScrollView;
-		let nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		const requestViewRender = () => this.requestViewRender();
+		const reusableOutput = this.contentChanged ? undefined : this.currentLayout?.renderCache;
+		this.contentChanged = false;
+		let nextLayout = renderLayoutFrame(root, width, height, requestViewRender, reusableOutput);
 		if (this.refreshSearch(nextLayout)) {
-			nextLayout = renderLayoutFrame(root, width, height, () => this.requestRender());
+			nextLayout = renderLayoutFrame(root, width, height, requestViewRender, nextLayout.renderCache);
 		}
 		// Resolve fake cursors before highlighting and compositing, which only track SGR codes
 		let screen = this.resolveFakeCursors(nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
@@ -1717,10 +1726,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const imageAnchorsNeedRedraw = screen.some(
 			(line, row) => changedRows[row] && (isImageLine(line) || isImageLine(this.previousScreen[row] ?? "")),
 		);
-		const isWezTerm = Boolean(process.env.WEZTERM_PANE) || process.env.TERM_PROGRAM?.toLowerCase() === "wezterm";
 		const imageCellsNeedRedraw =
 			!imageAnchorsNeedRedraw &&
-			isWezTerm &&
 			this.imageProtocol === "kitty" &&
 			changedRows.some(Boolean) &&
 			screen.some((line, row) => {
@@ -1742,22 +1749,24 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let buffer = BEGIN_SYNCHRONIZED_OUTPUT;
 		if (fullRedraw) {
 			this.fullRedrawCount += 1;
-			const clearImages =
-				this.imageProtocol === "kitty" && hadUploadedKittyImages
-					? deleteAllKittyPlacements()
-					: this.deleteKittyImages();
-			buffer += `${clearImages}\x1b[2J`;
+			if (this.imageProtocol === "kitty" && hadUploadedKittyImages) {
+				// Kitty frees image data without placements on ED 2, which would break placement-only reuse.
+				// Every row is cleared with EL 2 below, so keep the uploads and skip the screen clear.
+				buffer += deleteAllKittyPlacements();
+			} else {
+				buffer += `${this.deleteKittyImages()}\x1b[2J`;
+			}
 		} else if (imagesNeedRedraw) {
 			if (this.imageProtocol === "iterm2") buffer += "\x1b[2J";
 			else if (this.imageProtocol === "kitty") buffer += deleteAllKittyPlacements();
 		}
 		buffer += preparedKittyScreen.evictedImageDeletion;
 
-		// WezTerm erases intersecting Kitty image cells when a later row write touches a covered row.
-		// Draw image placements after every clear and text write so nothing later intersects them; preserve
-		// the existing interleaved output for text-only frames and every other terminal.
-		const drawKittyImagesLast =
-			redrawImages && this.imageProtocol === "kitty" && screen.some(isImageLine) && isWezTerm;
+		// Some terminals store Kitty images in the cells they cover (WezTerm, xterm.js's image addon in Orca),
+		// so clearing or writing a covered row erases that part of the image. Draw placements after every clear
+		// and text write so nothing later intersects them. Terminals that keep images on a separate layer
+		// (Kitty, Ghostty) render the same result; text-only frames keep the interleaved output.
+		const drawKittyImagesLast = redrawImages && this.imageProtocol === "kitty" && screen.some(isImageLine);
 		if (drawKittyImagesLast) {
 			for (let row = 0; row < height; row++) {
 				if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;

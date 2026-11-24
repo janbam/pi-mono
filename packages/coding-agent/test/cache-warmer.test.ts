@@ -198,7 +198,14 @@ describe("cache warming", () => {
 		// JBMOD: the Anthropic Messages API gets the documented max_tokens 0 pre-warm.
 		expect(calls[0]).toMatchObject({
 			model: adaptiveModel,
-			options: { reasoning: "high", sessionId: "s", transformHeaders, maxTokens: 0, maxRetries: 0 },
+			options: {
+				reasoning: "high",
+				sessionId: "s",
+				transformHeaders,
+				maxTokens: 0,
+				maxRetries: 0,
+				disableContinuation: true,
+			},
 		});
 		expect(calls[0].options?.signal).not.toBe(signal);
 		expect(events[0]).toMatchObject({
@@ -599,7 +606,9 @@ describe("cache warming", () => {
 			usage,
 			"extension override",
 		);
-		expect(formatCacheWarmingUsage(entry)).toBe("Cache warmed (extension override): $0.029497");
+		expect(formatCacheWarmingUsage(entry.usage.cost.total, entry.note)).toBe(
+			"Cache warmed (extension override): $0.029497",
+		);
 
 		// JBMOD: indicator line above the editor.
 		expect(

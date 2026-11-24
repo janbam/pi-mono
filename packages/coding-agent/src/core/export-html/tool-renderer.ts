@@ -2,6 +2,7 @@
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { Component } from "@earendil-works/pi-tui";
+import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import type { ToolRenderContext, ToolRenderers } from "../extensions/types.ts";
@@ -46,7 +47,7 @@ export interface ToolTextRenderer {
 }
 
 interface ToolComponentRenderer {
-	renderCall(toolCallId: string, toolName: string, args: unknown, isPartial: boolean): string[] | undefined;
+	renderCall(toolCallId: string, toolName: string, args: unknown, isPartial: boolean): readonly string[] | undefined;
 	renderResult(
 		toolCallId: string,
 		toolName: string,
@@ -62,7 +63,7 @@ function isBlankRenderedLine(line: string): boolean {
 	return stripAnsi(line).trim().length === 0;
 }
 
-function trimRenderedResultLines(lines: string[]): string[] {
+function trimRenderedResultLines(lines: readonly string[]): string[] {
 	let start = 0;
 	let end = lines.length;
 	while (start < end && isBlankRenderedLine(lines[start])) start++;
@@ -110,11 +111,18 @@ function createToolComponentRenderer(deps: ToolHtmlRendererDeps): ToolComponentR
 			isError,
 			durationMs: undefined,
 			outputPad: 1,
+			keyText,
+			keyHint,
 		};
 	};
 
 	return {
-		renderCall(toolCallId: string, toolName: string, args: unknown, isPartial: boolean): string[] | undefined {
+		renderCall(
+			toolCallId: string,
+			toolName: string,
+			args: unknown,
+			isPartial: boolean,
+		): readonly string[] | undefined {
 			try {
 				renderedArgs.set(toolCallId, args);
 				const toolDef = getToolRenderers(toolName);
@@ -198,7 +206,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	};
 }
 
-function ansiLinesToText(lines: string[]): string | null {
+function ansiLinesToText(lines: readonly string[]): string | null {
 	const text = trimRenderedResultLines(lines)
 		.map((line) => stripAnsi(line).trimEnd())
 		.join("\n");
