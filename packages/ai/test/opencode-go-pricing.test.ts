@@ -45,11 +45,57 @@ describe("parseOpenCodeGoPricing", () => {
 		[3, 3],
 		[{ "12h": 0.5, "30m": 0.25 }, 0.25],
 		[{ "1h": 3, "5m": 1.875 }, 1.875],
+		[{ "12h": 0.5, "1h": 0.25 }, 0.25],
 	])("accepts scalar and retention-specific cache write rates: %j", (write, cacheWrite) => {
 		const catalog = {
 			data: [{ ...grok, cost: { text: { input: { price: 2, cache: { write } }, output: { price: 6 } } } }],
 		};
 		expect(parseOpenCodeGoPricing(catalog).get(grok.id)).toMatchObject({ cacheRead: 0, cacheWrite });
+	});
+
+	it.each([
+		["2026-11-30T23:59:59Z", 1],
+		["2026-12-01T00:00:00Z", 2],
+		["2026-12-08T00:00:00Z", 1],
+	])("applies date-only multipliers to all token rates only within the UTC range at %s", (date, factor) => {
+		const catalog = {
+			data: [
+				{
+					...grok,
+					cost: {
+						text: { ...grok.cost.text, input: { price: 2, cache: { read: 0.5, write: 0.25 } } },
+						multipliers: [{ when: { date: { gte: "2026-12-01", lt: "2026-12-08" } }, factor: 2 }],
+					},
+				},
+			],
+		};
+		expect(parseOpenCodeGoPricing(catalog, new Date(date)).get(grok.id)).toEqual({
+			input: 2 * factor,
+			output: 6 * factor,
+			cacheRead: 0.5 * factor,
+			cacheWrite: 0.25 * factor,
+			usage: 15,
+		});
+	});
+
+	it("ignores an active peak schedule even when its date condition matches", () => {
+		const model = {
+			...grok,
+			cost: {
+				...grok.cost,
+				multipliers: [
+					{
+						when: {
+							date: { gte: "2026-12-01" },
+							utc_days: { in: ["tue"] },
+							any: [{ all: [{ utc_hours: { gte: "01:00" } }, { utc_hours: { lt: "04:00" } }] }],
+						},
+						factor: 2,
+					},
+				],
+			},
+		};
+		expect(parseOpenCodeGoPricing({ data: [model] }, new Date("2026-12-01T02:00:00Z")).get(grok.id)?.input).toBe(2);
 	});
 
 	it("interprets a null monthly usage record as an unlimited promotion", () => {
@@ -196,6 +242,20 @@ describe("strict model generation with the OpenCode Go pricing override", () => 
 		const { outputPath, status, log } = generateWithGoCatalog({ data: [] }, httpStatus);
 		expect(status, log).toBe(1);
 		expect(log).toContain(message);
+		expect(existsSync(outputPath)).toBe(false);
+	});
+
+	it("fails before writing the catalog when a peak rule contains an unknown condition", () => {
+		const model = {
+			...grok,
+			cost: {
+				...grok.cost,
+				multipliers: [{ when: { all: [{ utc_days: { in: ["tue"] } }, { region: "eu" }] }, factor: 2 }],
+			},
+		};
+		const { outputPath, status, log } = generateWithGoCatalog({ data: [model] });
+		expect(status, log).toBe(1);
+		expect(log).toContain("unrecognised multiplier condition at grok-4.7.cost.multipliers[0].when.all[1].region");
 		expect(existsSync(outputPath)).toBe(false);
 	});
 });

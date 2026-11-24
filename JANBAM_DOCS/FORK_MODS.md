@@ -36,7 +36,7 @@ Upstream behavior: opencode-go model costs are models.dev's nominal per-million-
 
 Fork behavior: the generator fetches [OpenCode's public Go model list](https://opencode.ai/inference/go/v1/models), which replaced the tables in the [Go docs](https://opencode.ai/docs/console/go/). It matches rows to models.dev by exact endpoint ID and scales the base text rates by `60 / go.monthly_usage.go`. The allowance is for standard Go, not Go Plus or Go Teams. A $60 allowance keeps the nominal price, a $30 allowance doubles it, and a $15 allowance quadruples it. An explicit `null` monthly usage record denotes an unlimited promotion and scales prices to zero.
 
-The override uses base rates only, as before. It ignores context tier overrides and scheduled multipliers. Cache-write pricing follows the Console's base pricing row: a scalar rate or the `5m` rate, then `30m`, then the first rate other than `12h`.
+The override applies date-only multipliers active on the UTC generation date to the base text rates. It ignores context tier overrides and peak multipliers based on UTC hours or days of the week. Unknown multiplier conditions fail strict generation. Cache-write pricing follows the Console's base pricing row: a scalar rate or the `5m` rate, then `30m`, then the first rate other than `12h`.
 
 Scope and guards:
 
