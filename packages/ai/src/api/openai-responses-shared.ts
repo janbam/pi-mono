@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
+	Response,
 	ResponseConfigurationUpdateItemParam,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
@@ -31,14 +32,16 @@ import type {
 	TranscriptContext,
 	Usage,
 } from "../types.ts";
+import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
-import { parseStreamingJson, parseToolCallArguments } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { resolveTranscript, resolveTranscriptTools, type TranscriptToolSupport } from "../utils/transcript.ts";
 import {
 	appendGrammarToolInputJsonDelta,
+	closeGrammarToolInputJson,
 	type GrammarToolInputJsonBuffer,
 	getGrammarToolInput,
 	getJsonSchemaToolParameters,
@@ -123,7 +126,6 @@ export interface OpenAIResponsesStreamOptions {
 }
 
 export interface ConvertResponsesMessagesOptions {
-	includeSystemPrompt?: boolean;
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	/** Whether later system messages are sent in place; otherwise they are folded into the leading prompt. */
 	supportsMidConvoSystemMessages?: boolean;
@@ -262,7 +264,6 @@ export function convertResponsesMessages<TApi extends Api>(
 			tools: convertResponsesTools(tools, { ...options?.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
 	};
-	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const pushConfigurationUpdate = (effort: string): void => {
 		messages.push({
 			type: "configuration_update",
@@ -281,20 +282,18 @@ export function convertResponsesMessages<TApi extends Api>(
 			// transformMessages keeps system messages in order, so their position matches the transcript.
 			const anchorsToolChanges = systemIndex++ >= transcriptTools.foldedSystemMessages;
 			if (anchorsToolChanges) appendSystemToolAdditions(msg, `system:${msgIndex}`);
-			if (!isLeadingSystemMessage || includeInitialSystemMessage) {
-				const parts = [isLeadingSystemMessage ? getSystemMessageText(msg) : renderSystemMessageUpdate(msg)];
-				if (anchorsToolChanges) {
-					// A redefinition is a removal plus an addition of the same name; only true removals are announced.
-					const added = new Set((msg.toolsAdded ?? []).map((tool) => tool.name));
-					const removed = (msg.toolsRemoved ?? []).map((tool) => tool.name).filter((name) => !added.has(name));
-					if (removed.length > 0) parts.push(renderToolRemovalNotice(removed));
-					// Recorded after this message's additions, whose notice precedes this removal notice.
-					for (const name of removed) unavailableTools.add(name);
-				}
-				const text = parts.filter((part) => part.length > 0).join("\n\n");
-				if (text.length > 0) {
-					messages.push({ role: instructionRole, content: sanitizeSurrogates(text) });
-				}
+			const parts = [isLeadingSystemMessage ? getSystemMessageText(msg) : renderSystemMessageUpdate(msg)];
+			if (anchorsToolChanges) {
+				// A redefinition is a removal plus an addition of the same name; only true removals are announced.
+				const added = new Set((msg.toolsAdded ?? []).map((tool) => tool.name));
+				const removed = (msg.toolsRemoved ?? []).map((tool) => tool.name).filter((name) => !added.has(name));
+				if (removed.length > 0) parts.push(renderToolRemovalNotice(removed));
+				// Recorded after this message's additions, whose notice precedes this removal notice.
+				for (const name of removed) unavailableTools.add(name);
+			}
+			const text = parts.filter((part) => part.length > 0).join("\n\n");
+			if (text.length > 0) {
+				messages.push({ role: instructionRole, content: sanitizeSurrogates(text) });
 			}
 		} else if (msg.role === "user") {
 			if (typeof msg.content === "string") {
@@ -478,33 +477,24 @@ export function convertResponsesTools(tools: readonly Tool[], options?: ConvertR
 // Stream processing
 // =============================================================================
 
-type StreamingToolCall = ToolCall & {
-	partialJson?: string;
-	customInput?: {
-		property: string;
-		jsonBuffer: GrammarToolInputJsonBuffer;
-	};
-};
-
-function getCustomToolCallInput(block: StreamingToolCall): string {
-	const property = block.customInput?.property;
-	if (property === undefined) return "";
-	const value = block.arguments[property];
-	return typeof value === "string" ? value : "";
-}
-
-function appendCustomToolCallInput(block: StreamingToolCall, nextInput: string, close: boolean): string | undefined {
-	const customInput = block.customInput;
-	if (!customInput) return undefined;
-	const delta = appendGrammarToolInputJsonDelta(customInput.jsonBuffer, customInput.property, nextInput, close);
-	block.arguments = { [customInput.property]: nextInput };
-	return delta;
-}
+/**
+ * Stream state of a tool call, kept in its output slot and never on the content block, so it never reaches partials:
+ * the JSON arguments of a function call, or the input of a custom (grammar) tool call.
+ */
+type ToolCallInput =
+	| { readonly kind: "json"; readonly arguments: ToolCallArgumentsStream }
+	| {
+			readonly kind: "custom";
+			readonly property: string;
+			readonly buffer: GrammarToolInputJsonBuffer;
+			/** JSON text of the item's initial input, sent with the first delta. */
+			unsent: string;
+	  };
 
 type ResponsesOutputSlot =
 	| { type: "thinking"; block: ThinkingContent; contentIndex: number }
 	| { type: "text"; block: TextContent; contentIndex: number }
-	| { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
+	| { type: "toolCall"; block: ToolCall; contentIndex: number; input: ToolCallInput };
 
 type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
 
@@ -517,6 +507,8 @@ export async function processResponsesStream<TApi extends Api>(
 ): Promise<void> {
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
+	// Tool calls whose output_item.done has not arrived yet.
+	const unfinishedToolCalls = new Set<ToolCall>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
@@ -562,19 +554,21 @@ export async function processResponsesStream<TApi extends Api>(
 			return slot;
 		}
 		if (item.type === "function_call") {
-			const block: StreamingToolCall = {
+			const args = new ToolCallArgumentsStream();
+			const block: ToolCall = {
 				type: "toolCall",
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
-				arguments: {},
+				arguments: item.arguments ? args.append(item.arguments) : {},
 				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
-				partialJson: item.arguments || "",
 			};
 			output.content.push(block);
+			unfinishedToolCalls.add(block);
 			const slot = {
 				type: "toolCall",
 				block,
 				contentIndex: output.content.length - 1,
+				input: { kind: "json", arguments: args },
 			} satisfies ResponsesOutputSlot;
 			outputSlots.set(outputIndex, slot);
 			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
@@ -583,22 +577,20 @@ export async function processResponsesStream<TApi extends Api>(
 		if (item.type === "custom_tool_call") {
 			const inputProperty = options?.grammarToolInputProperties?.get(item.name) ?? "input";
 			const input = item.input || "";
-			const block: StreamingToolCall = {
+			const block: ToolCall = {
 				type: "toolCall",
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
 				arguments: { [inputProperty]: input },
 				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
-				customInput: {
-					property: inputProperty,
-					jsonBuffer: { input: "", started: false, closed: false },
-				},
 			};
 			output.content.push(block);
+			unfinishedToolCalls.add(block);
 			const slot = {
 				type: "toolCall",
 				block,
 				contentIndex: output.content.length - 1,
+				input: customInput(inputProperty, input),
 			} satisfies ResponsesOutputSlot;
 			outputSlots.set(outputIndex, slot);
 			stream.push({ type: "toolcall_start", contentIndex: slot.contentIndex, partial: output });
@@ -632,6 +624,7 @@ export async function processResponsesStream<TApi extends Api>(
 	): void => {
 		sawTerminalResponseEvent = true;
 		backfillReasoningSignatures(response.output ?? []);
+		appendReasoningRemovals(output, response.input_transformations);
 		if (response?.id) {
 			output.responseId = response.id;
 		}
@@ -732,32 +725,23 @@ export async function processResponsesStream<TApi extends Api>(
 			});
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || slot.block.partialJson === undefined) continue;
-			slot.block.partialJson += event.delta;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
+			if (slot?.input.kind !== "json") continue;
+			slot.block.arguments = slot.input.arguments.append(event.delta);
 			pushToolCallDelta(slot, event.delta);
 		} else if (event.type === "response.function_call_arguments.done") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || slot.block.partialJson === undefined) continue;
-			const previousPartialJson = slot.block.partialJson;
-			slot.block.partialJson = event.arguments;
-			slot.block.arguments = parseStreamingJson(slot.block.partialJson);
-
-			if (event.arguments.startsWith(previousPartialJson)) {
-				const delta = event.arguments.slice(previousPartialJson.length);
-				if (delta.length > 0) pushToolCallDelta(slot, delta);
-			}
+			if (slot?.input.kind !== "json") continue;
+			const replaced = slot.input.arguments.replace(event.arguments);
+			slot.block.arguments = replaced.arguments;
+			if (replaced.delta) pushToolCallDelta(slot, replaced.delta);
 		} else if (event.type === "response.custom_tool_call_input.delta") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(
-				slot,
-				appendCustomToolCallInput(slot.block, getCustomToolCallInput(slot.block) + event.delta, false),
-			);
+			if (slot?.input.kind !== "custom") continue;
+			pushToolCallDelta(slot, appendCustomInput(slot.block, slot.input, event.delta));
 		} else if (event.type === "response.custom_tool_call_input.done") {
 			const slot = getSlot(event.output_index, "toolCall");
-			if (!slot || !slot.block.customInput) continue;
-			pushToolCallDelta(slot, appendCustomToolCallInput(slot.block, event.input, true));
+			if (slot?.input.kind !== "custom") continue;
+			pushToolCallDelta(slot, closeCustomInput(slot.block, slot.input, event.input));
 		} else if (event.type === "response.output_item.done") {
 			const item = event.item;
 			applyMessagePhaseStopReason(item);
@@ -786,16 +770,11 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
-			} else if (
-				item.type === "function_call" &&
-				slot?.type === "toolCall" &&
-				slot.block.partialJson !== undefined
-			) {
-				Object.assign(slot.block, parseToolCallArguments(item.arguments || slot.block.partialJson));
+			} else if (item.type === "function_call" && slot?.type === "toolCall" && slot.input.kind === "json") {
+				if (item.arguments) slot.input.arguments.replace(item.arguments);
+				Object.assign(slot.block, slot.input.arguments.finish());
 				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
-				// Finalize in-place and strip the scratch buffer so replay only
-				// carries parsed arguments.
-				delete slot.block.partialJson;
+				unfinishedToolCalls.delete(slot.block);
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,
@@ -803,13 +782,10 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
-			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.block.customInput) {
-				pushToolCallDelta(
-					slot,
-					appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
-				);
+			} else if (item.type === "custom_tool_call" && slot?.type === "toolCall" && slot.input.kind === "custom") {
+				pushToolCallDelta(slot, closeCustomInput(slot.block, slot.input, item.input));
 				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
-				delete slot.block.customInput;
+				unfinishedToolCalls.delete(slot.block);
 				stream.push({
 					type: "toolcall_end",
 					contentIndex: slot.contentIndex,
@@ -840,18 +816,74 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 	// The agent runs every tool call in the final message. Refuse to hand over calls whose
 	// output_item.done never arrived: their arguments may be cut off or mixed up, e.g. when a
-	// non-compliant server omits output_index. Finished calls have their scratch buffers removed.
+	// non-compliant server omits output_index.
 	if (output.stopReason === "toolUse") {
-		for (const block of output.content) {
-			if (block.type !== "toolCall") continue;
-			const toolCall = block as StreamingToolCall;
-			if (toolCall.partialJson !== undefined || toolCall.customInput !== undefined) {
-				throw new Error(
-					`OpenAI Responses stream completed with an unfinished tool call: ${toolCall.name} (${toolCall.id})`,
-				);
-			}
+		for (const toolCall of unfinishedToolCalls) {
+			throw new Error(
+				`OpenAI Responses stream completed with an unfinished tool call: ${toolCall.name} (${toolCall.id})`,
+			);
 		}
 	}
+}
+
+/**
+ * Record the replayed reasoning items the API withheld from the model, with the reason for each.
+ * From GPT-6.2 on, OpenAI removes reasoning that follows an edit of earlier input (`prefix_mismatch`)
+ * and reasoning created under another organization, end user, or model. A removal is reported again
+ * on every later request that replays the item.
+ *
+ * `turn_boundary` removals are left out: models that use only current-turn reasoning (all models
+ * before GPT-5.6) report every earlier turn's reasoning item on every request. That is their normal
+ * behavior, and storing it would grow the session quadratically with the conversation.
+ */
+function appendReasoningRemovals(output: AssistantMessage, transformations: Response["input_transformations"]): void {
+	// Wire input: older servers and proxies omit the field, and Codex tolerates malformed entries too.
+	if (!Array.isArray(transformations)) return;
+	const removals = transformations.filter(
+		(transformation) =>
+			transformation?.type === "reasoning" &&
+			transformation.action === "removed" &&
+			transformation.reason !== "turn_boundary",
+	);
+	if (removals.length === 0) return;
+	appendAssistantMessageDiagnostic(output, {
+		type: "openai_input_transformations",
+		timestamp: Date.now(),
+		details: {
+			transformations: removals.map(({ type, id, action, reason }) => ({ type, id, action, reason })),
+		},
+	});
+}
+
+type CustomInput = Extract<ToolCallInput, { kind: "custom" }>;
+
+/** Stream state of a custom tool call that starts with `initialInput`. */
+function customInput(property: string, initialInput: string): CustomInput {
+	const buffer = { input: "", started: false, closed: false };
+	return {
+		kind: "custom",
+		property,
+		buffer,
+		unsent: appendGrammarToolInputJsonDelta(buffer, property, initialInput) ?? "",
+	};
+}
+
+/** Append to a streaming custom tool input; returns the matching piece of its JSON arguments text. */
+function appendCustomInput(block: ToolCall, input: CustomInput, delta: string): string | undefined {
+	return sendCustomInput(block, input, appendGrammarToolInputJsonDelta(input.buffer, input.property, delta));
+}
+
+/** Close a custom tool input with the provider's complete input, if it sent one. */
+function closeCustomInput(block: ToolCall, input: CustomInput, finalInput: string | undefined): string | undefined {
+	return sendCustomInput(block, input, closeGrammarToolInputJson(input.buffer, input.property, finalInput));
+}
+
+function sendCustomInput(block: ToolCall, input: CustomInput, jsonDelta: string | undefined): string | undefined {
+	block.arguments = { [input.property]: input.buffer.input };
+	if (input.unsent === "") return jsonDelta;
+	const sent = input.unsent + (jsonDelta ?? "");
+	input.unsent = "";
+	return sent;
 }
 
 function mapStopReason(

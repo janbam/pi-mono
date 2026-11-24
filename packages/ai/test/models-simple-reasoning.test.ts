@@ -30,8 +30,9 @@ describe("model-aware simple reasoning", () => {
 		expect(resolveModelSimpleStreamOptions(glm)).toEqual({ reasoning: "low" });
 	});
 
-	it("raises Mercury 2 off to its documented lowest effort", () => {
-		const mercury = getBuiltinModel("openrouter", "inception/mercury-2");
+	it("raises off to low when low is the first supported effort", () => {
+		// The old Mercury 2 catalog entry is gone. Keep the same reasoning contract as a fixture.
+		const mercury = { ...model(true), thinkingLevelMap: { off: null, minimal: null, low: "low" } };
 
 		expect(resolveModelSimpleStreamOptions(mercury, { reasoning: "off" })).toEqual({ reasoning: "low" });
 	});

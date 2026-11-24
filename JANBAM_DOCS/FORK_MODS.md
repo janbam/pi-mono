@@ -47,11 +47,13 @@ Scope and guards:
 
 Implementation:
 
-- JSON parser and usage-scaling cost helper: `packages/ai/scripts/opencode-go-pricing.ts`
-- Fetch + override wiring in the OpenCode variant loop: `packages/ai/scripts/generate-models.ts` (`fetchOpenCodeGoPricing`, `opencodeGoPricing`, `goPricingRow`)
+- JSON parser and usage-scaling cost helper: `packages/ai/catalog/sources/opencode-go.ts`
+- Source loading and provider finalization: `packages/ai/catalog/sources/index.ts`, `packages/ai/catalog/providers/opencode-go.ts`
 - Tests: `packages/ai/test/opencode-go-pricing.test.ts` (parser units, cost scaling, strict generator integration with mocked fetches)
 
 Merge note: v1.3.0 moves OpenCode endpoints to `/inference` and `/inference/go`. The fork retains upstream's API selection, including Gemini's Google API and MiniMax's Anthropic API, while applying Go pricing only to costs. The GLM Chat Completions override still emits z-ai thinking fields without `clear_thinking`.
+
+Merge note: v1.6.0 splits model generation into source loading and provider definitions. The Go finalizer replaces the full `cost` object so a matched model cannot retain unscaled context tiers. This controls the bundled catalog. A newer pi.dev runtime overlay can still replace the bundled Go entries with nominal prices, including when loaded from the local catalog cache.
 
 ## /tree: Enter navigates directly, tab opens the summary menu
 
@@ -139,7 +141,7 @@ Implementation:
 
 ## Prompt-cache warming: fork policy on upstream's `CacheWarmer`
 
-Upstream behavior: `cacheWarming` defaults to `streaming`. `CacheWarmer` replays the last captured request with a one-token cap at 90% of the TTL, only while the $0.05 expected-savings floor holds, for at most 60 min (running) or 30 min (idle), and only for requests captured in the current process. Failed refreshes are rescheduled silently; the miss cost uses the 5-minute write rate even for 1-hour entries.
+Upstream behavior: `cacheWarming` defaults to `idle` since v1.5.1. `CacheWarmer` replays the last captured request with a one-token cap at 90% of the TTL, only while the $0.05 expected-savings floor holds, for at most 60 min (running) or 30 min (idle), and only for requests captured in the current process. Failed refreshes are rescheduled silently; the miss cost uses the 5-minute write rate even for 1-hour entries.
 
 Fork behavior:
 
@@ -158,6 +160,8 @@ Merge note: fork request options carry the unresolved Pi thinking level (`Models
 Virtual-model selections are not warmed or restored. Upstream's current-context policy rejects their routed physical requests; transcript restore also skips them so a replay cannot route to a different model.
 
 Merge note: v1.4.0 centralizes provider attribution in the client identity. Live and restored warm requests both use the shared request-options builder so the fork's replay path retains upstream's identity policy.
+
+Merge note: v1.6.0 adds provider continuation, including Anthropic message threads. Warming replays the full prefix with continuation disabled and leaves live thread state alone. The p2 app uses the shared warming policy and checks replay safety against the model-normalized reasoning level. The CLI retains the fork policy and zero-token Anthropic pre-warm.
 
 Implementation:
 
@@ -191,7 +195,7 @@ Upstream behavior: the default prompt starts with the pi-harness introduction, i
 
 Fork behavior: the preamble is "You are the top senior software engineer and system architecture designer.", the conciseness rule is stricter (high-signal, no preambles or hedging, ask about ambiguities), and the pi documentation section is omitted. An explicit empty custom prompt is a valid empty base prompt; only `undefined` selects the default. `--append-system-prompt ""` likewise disables appended prompts, replacing `APPEND_SYSTEM.md` discovery. Appended prompts (`--append-system-prompt`, `APPEND_SYSTEM.md`) are inserted verbatim after the preceding section with a blank line in between; upstream wraps them in `<addendum>` tags. They remain the `addendum` section for transcript diffs. `packages/coding-agent/src/core/system-prompt.ts` (`buildSystemPromptSections`).
 
-The OpenAI Codex provider omits the `instructions` field when the system prompt is empty or missing. Upstream substitutes `"You are a helpful assistant."` (upstream #4184, from when the backend rejected an absent `instructions` field with HTTP 400); the backend now accepts requests without it over both WebSocket and SSE. `packages/ai/src/api/openai-codex-responses.ts` (`buildRequestBody`), test `packages/ai/test/openai-codex-stream.test.ts`.
+Since v1.6.0, OpenAI Codex follows upstream's leading developer item format and omits top-level `instructions` for every request. A missing or explicitly empty system prompt still sends no placeholder or developer item. `packages/ai/src/api/openai-codex-responses.ts` (`buildRequestBody`), test `packages/ai/test/openai-codex-stream.test.ts`.
 
 `-nd` / `--no-cwd` omits the `<cwd>` system prompt section for the process, including an extension-supplied replacement for that section. It does not change the working directory used for tools, resource discovery, or sessions. The SDK can select the same behavior with `createAgentSession({ noCwd: true })`.
 
@@ -222,7 +226,8 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 ## Smaller fork additions
 
 - Status messages retain their own text across theme redraws. Upstream v0.99.1 rebuilds every status from one shared latest-message field, which rewrites older transcript statuses. The fork snapshots each message and replaces only immediately consecutive status rows. `packages/coding-agent/src/modes/interactive/interactive-mode.ts` (`showStatus`), tested in `test/interactive-tui.test.ts`.
-- GitHub Copilot's Claude Opus 5.5 catalog entry keeps `off` and `minimal` thinking unavailable even after models.dev lists the model. The generator applies the restriction to both upstream and fallback entries: `packages/ai/scripts/generate-models.ts` (`GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES`), tested in `packages/ai/test/github-copilot-anthropic.test.ts`.
+- GitHub Copilot's Claude Opus 5.5 catalog entry keeps `off` and `minimal` thinking unavailable. The fork reapplies the restriction after shared catalog rules in `packages/ai/catalog/providers/github-copilot.ts` (`THINKING_LEVEL_OVERRIDES`). Upstream now sources this model from models.dev and also restricts it during model construction.
+- GLM-5.3 and GLM-5.3 Flash use always-on thinking. `packages/ai/catalog/families/glm.ts` maps Cloudflare to low, medium and high and other hosts to low, high and max. `packages/ai/test/zai-coding-plan-models.test.ts` covers the supported levels, and `test/openai-completions-tool-choice.test.ts` covers payloads.
 - `--log-api-requests <file>` writes every outgoing provider request (URL, method, redacted headers, body, status, duration) as JSONL by wrapping global `fetch`, plus every outgoing WebSocket message (`method: "WS"`, e.g. OpenAI Codex's default `auto` transport) by wrapping global `WebSocket`. Amazon Bedrock's node:http transport is not covered. `packages/coding-agent/src/core/api-request-logging.ts`, test `test/api-request-logging.test.ts`.
 - The Node-only WebSocket logger uses explicit Undici types because upstream v1.4.0's IndexedDB source loads DOM globals into the aggregate typecheck. Runtime socket construction and sends are unchanged.
 - `/export <file>.md` exports the visible conversation as Markdown with thinking omitted and tools rendered like interactive mode, including upstream v1.2.0's extension renderer resolvers for unregistered tools. `packages/coding-agent/src/core/session-export.ts` (`exportSessionToMarkdown`), `AgentSession.exportToMarkdown()`, test `test/export-markdown.test.ts`.
@@ -230,7 +235,7 @@ Implementation: `packages/coding-agent/src/core/agent-session.ts`, `src/core/ext
 - Transcript rendering orders entries chronologically, so the latest `[compaction]` box sits after the kept tail on resume and rebuild instead of being hoisted to the top (upstream renders `buildContextEntries()` in model-context order, which prepends the compaction). All render paths (initial render, chat rebuild, both live compaction handlers) share `buildTranscriptEntries()` in `interactive-mode.ts`; model context is unchanged. Test `test/interactive-mode-compaction.test.ts`.
 - Shift+Enter under tmux: `matchesKey`/`parseKey` treat legacy `\x1b\r` and `\n` as shift+enter regardless of Kitty protocol state (upstream only does so while Kitty is active and otherwise reads `\x1b\r` as alt+enter and `\n` as enter). `packages/tui/src/keys.ts`.
 - `packages/pless`: a Markdown pager CLI on the pi-tui renderer. It must carry the lockstep workspace version and exact matching `@earendil-works/*` dependency versions, or npm installs a nested published copy.
-- Upstream v1.4.0's Cloudflare worker test tooling pins vulnerable transitive dependencies. Root overrides pin Zod `4.6.5` to `4.6.6` and Undici `7.29.1` to `7.30.1`; unrelated dependency versions remain upstream-owned. Npm 11.11.1 does not propagate these overrides through workspace-only dependency edges, so root dev dependencies repeat the exact existing plugin and Miniflare versions to make npm apply them. Workerd and Bun's real-worker lifetime cases crash with `SIGILL` on this fork's no-AVX development host, so those worker tests require another host and remain unverified here.
+- The v1.4.0 Cloudflare test dependency overrides are retired in v1.6.0. Upstream's lockfile now uses Zod `4.6.6` and Undici `7.30.1` on the affected paths. Workerd and Bun's real-worker lifetime tests require a host with AVX.
 - Durable test suites use a 30-second per-test timeout on this machine. Upstream's five-second default is too short for conformance cases that close and reopen SQLite after every commit. The 20,000-task retention and ownership stress tests get 180 seconds instead of upstream's 60 seconds to accommodate slower hosts. Task depth, assertions, and production behavior are unchanged. `packages/durable/vitest.config.ts`, `test/harness-scheduler-retention.test.ts`, `test/harness-ownership.test.ts` (upstream v1.0.0 removed `packages/session-backends/sqlite-node`).
 
 ## Fullscreen mouse-wheel scrolling has a configurable step

@@ -15,18 +15,25 @@ export class UserMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
+	private messageId?: string;
+	private timestamp?: string;
+	private zoneLines?: { source: readonly string[]; lines: string[] };
 
 	constructor(
 		text: string,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
+		messageId?: string,
+		timestamp?: string,
 	) {
 		super();
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
 		this.markdownTransformers = markdownTransformers;
+		this.messageId = messageId;
+		this.timestamp = timestamp;
 		this.rebuild();
 	}
 
@@ -52,20 +59,31 @@ export class UserMessageComponent extends Container {
 				{
 					preserveOrderedListMarkers: true,
 					preserveBackslashEscapes: true,
-					transform: createMarkdownTransform("user", false, this.markdownTransformers),
+					transform: createMarkdownTransform(
+						"user",
+						() => false,
+						this.markdownTransformers,
+						this.messageId,
+						this.timestamp,
+					),
 				},
 			),
 		);
 	}
 
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		const lines = super.render(width);
 		if (lines.length === 0) {
 			return lines;
 		}
 
-		lines[0] = OSC133_ZONE_START + lines[0];
-		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-		return lines;
+		// Container output is shared across frames; copy it once per change instead of mutating it.
+		if (this.zoneLines?.source !== lines) {
+			const zoned = [...lines];
+			zoned[0] = OSC133_ZONE_START + zoned[0];
+			zoned[zoned.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + zoned[zoned.length - 1];
+			this.zoneLines = { source: lines, lines: zoned };
+		}
+		return this.zoneLines.lines;
 	}
 }

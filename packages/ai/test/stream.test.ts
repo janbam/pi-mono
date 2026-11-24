@@ -9,7 +9,7 @@ import type { Api, Context, ImageContent, Model, StreamOptions, Tool, ToolResult
 
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
 
-import { StringEnum } from "../src/utils/typebox-helpers.ts";
+import { StringEnum } from "../src/utils/string-enum.ts";
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.ts";
 import { hasBedrockCredentials } from "./bedrock-utils.ts";
 import { hasCloudflareAiGatewayCredentials, hasCloudflareWorkersAICredentials } from "./cloudflare-utils.ts";
@@ -970,8 +970,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (devstral-medium-latest)", () => {
-		const llm = getModel("mistral", "devstral-medium-latest");
+	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (mistral-medium-latest)", () => {
+		const llm = getModel("mistral", "mistral-medium-latest");
 
 		it("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(llm);
@@ -996,8 +996,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (pixtral-12b with image support)", () => {
-		const llm = getModel("mistral", "pixtral-12b");
+	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (mistral-small-latest with image support)", () => {
+		const llm = getModel("mistral", "mistral-small-latest");
 
 		it("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(llm);
@@ -1304,6 +1304,37 @@ describe("Generate E2E Tests", () => {
 			await multiTurn(llm, thinkingOptions);
 		});
 	});
+
+	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_CN_API_KEY)(
+		"Qwen Token Plan Individual Provider (Qwen3.8-Max, CN region)",
+		() => {
+			const llm = getModel("qwen-token-plan-individual-cn", "qwen3.8-max");
+			const thinkingOptions = {
+				thinkingEnabled: true,
+				reasoningEffort: "high",
+			} satisfies StreamOptionsWithExtras;
+
+			it("should complete basic text generation", { retry: 3 }, async () => {
+				await basicTextGeneration(llm);
+			});
+
+			it("should handle tool calling", { retry: 3 }, async () => {
+				await handleToolCall(llm);
+			});
+
+			it("should handle streaming", { retry: 3 }, async () => {
+				await handleStreaming(llm);
+			});
+
+			it("should handle thinking mode", { retry: 3 }, async () => {
+				await handleThinking(llm, thinkingOptions);
+			});
+
+			it("should handle multi-turn with thinking and tools", { retry: 3 }, async () => {
+				await multiTurn(llm, thinkingOptions);
+			});
+		},
+	);
 
 	describe.skipIf(!process.env.ANT_LING_API_KEY)("Ant Ling Provider (Ling 2.6 Flash via OpenAI Completions)", () => {
 		const llm = getModel("ant-ling", "Ling-2.6-flash");

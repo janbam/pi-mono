@@ -14,7 +14,6 @@ import {
 	type ModelReferenceRequest,
 	resolveCliModel,
 	resolveModelReference,
-	resolveModelScope,
 	resolveModelScopeWithDiagnostics,
 } from "../src/core/model-resolver.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -115,6 +114,8 @@ const referenceCatalog = [
 	referenceModel("gw-b", "claude-opus-4-8"),
 	referenceModel("gw-b", "gw-b/free"),
 	referenceModel("gw-b", "zz:free"),
+	// URL-derived provider id containing "/" (#11394)
+	referenceModel("llama=http://host:10800", "unsloth/qwen-gguf:BF16"),
 ];
 
 type ReferenceExpected =
@@ -151,6 +152,16 @@ const referenceCases: ReferenceCase[] = [
 		name: "provider prefix, colon id, and thinking suffix",
 		text: "openrouter/qwen/qwen3-coder:exacto:high",
 		expected: { model: "openrouter/qwen/qwen3-coder:exacto", thinkingLevel: "high" },
+	},
+	{
+		name: "provider id containing a slash",
+		text: "llama=http://host:10800/unsloth/qwen-gguf:BF16",
+		expected: { model: "llama=http://host:10800/unsloth/qwen-gguf:BF16" },
+	},
+	{
+		name: "provider id containing a slash, with thinking suffix",
+		text: "llama=http://host:10800/unsloth/qwen-gguf:BF16:high",
+		expected: { model: "llama=http://host:10800/unsloth/qwen-gguf:BF16", thinkingLevel: "high" },
 	},
 	{
 		name: "raw id wins when the provider prefix names no matching model",
@@ -363,23 +374,6 @@ describe("resolveModelScopeWithDiagnostics", () => {
 				},
 			]);
 			expect(warn).not.toHaveBeenCalled();
-		} finally {
-			warn.mockRestore();
-		}
-	});
-
-	test("resolveModelScope preserves CLI warning output", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			const registry = {
-				getAvailable: () => allModels,
-			} as unknown as Parameters<typeof resolveModelScope>[1];
-
-			const scopedModels = await resolveModelScope(["missing"], registry);
-
-			expect(scopedModels).toEqual([]);
-			expect(warn).toHaveBeenCalledOnce();
-			expect(warn.mock.calls[0][0]).toContain('Warning: No models match pattern "missing"');
 		} finally {
 			warn.mockRestore();
 		}
@@ -686,15 +680,15 @@ describe("resolveCliModel", () => {
 
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
-		expect(defaultModelPerProvider.openai).toBe("gpt-5.5");
-		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-6.1-sol");
+		expect(defaultModelPerProvider.openai).toBe("gpt-6.2-sol");
+		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-6.2-sol");
 	});
 
 	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
 		expect(defaultModelPerProvider.zai).toBe("glm-5.3");
 		expect(defaultModelPerProvider["zai-coding-cn"]).toBe("glm-5.3");
-		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
+		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M3");
+		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M3");
 		expect(defaultModelPerProvider.cerebras).toBe("gpt-oss-120b");
 		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
 	});
@@ -715,7 +709,11 @@ describe("default model selection", () => {
 	});
 
 	test("ai-gateway default tracks current model", () => {
-		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
+		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.3");
+	});
+
+	test("anthropic default tracks current model", () => {
+		expect(defaultModelPerProvider.anthropic).toBe("claude-opus-5-5");
 	});
 
 	test("xai default tracks current model", () => {
@@ -724,6 +722,7 @@ describe("default model selection", () => {
 
 	test("qwen token plan individual default tracks current model", () => {
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
+		expect(defaultModelPerProvider["qwen-token-plan-individual-cn"]).toBe("qwen3.8-max");
 	});
 
 	test("findInitialModel selects ai-gateway default when available", async () => {
