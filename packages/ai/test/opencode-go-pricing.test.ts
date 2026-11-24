@@ -1,19 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	getOpenCodeGoUsageAdjustedCost,
-	OPENCODE_GO_PRICING_URL,
-	parseOpenCodeGoPricingTable,
-} from "../scripts/opencode-go-pricing.ts";
-import type { AnyModel, Api, Model } from "../src/types.ts";
-import { isModelType } from "../src/utils/model-operations.ts";
+import { getOpenCodeGoUsageAdjustedCost, parseOpenCodeGoPricing } from "../scripts/opencode-go-pricing.ts";
+import type { Api, Model } from "../src/types.ts";
 
-const packageRoot = fileURLToPath(new URL("..", import.meta.url));
-const temporaryRoots: string[] = [];
 /** Models required by the generator's strict Qwen Token Plan Individual allowlist. */
 const qwenTokenPlanIndividualModelIds = [
 	"deepseek-v4-flash-0731",
@@ -27,475 +20,182 @@ const qwenTokenPlanIndividualModelIds = [
 	"qwen3.8-max",
 ];
 
-/** Mirrors the Go docs page: request-estimate decoy table, pricing table, endpoints table. */
-const requestsTableHtml = `
-<table>
-	<tr><th>Model</th><th>requests per 5 hour</th><th>requests per week</th><th>requests per month</th></tr>
-	<tr><td>Grok 4.6</td><td>100</td><td>600</td><td>2400</td></tr>
-</table>`;
+/** Relevant fields from OpenCode's public Go model response, including a context price override. */
+const grok = {
+	id: "grok-4.7",
+	name: "Grok 4.7",
+	cost: {
+		text: {
+			input: { price: 2, cache: { read: 0.5 }, overrides: [{ when: { context: { gt: 200000 } }, price: 4 }] },
+			output: { price: 6, overrides: [{ when: { context: { gt: 200000 } }, price: 12 }] },
+		},
+	},
+	go: { monthly_usage: { "go-plus": 60, go: 15, "go-teams": 20 } },
+};
 
-const pricingTableHtml = `
-<table>
-	<tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr>
-	<tr><td>Grok 4.6 (&#8804; 200K tokens)</td><td>$2.00</td><td>$6.00</td><td>$0.50</td><td>-</td><td><strong>$15</strong></td></tr>
-	<tr><td>Grok 4.6 (&gt; 200K tokens)</td><td>$4.00</td><td>$12.00</td><td>$1.00</td><td>-</td><td><strong>$15</strong></td></tr>
-	<tr><td>DeepSeek V4.1 Flash (Off-Peak)</td><td>$0.15</td><td>$0.60</td><td>$0.003</td><td>-</td><td><strong>$15</strong></td></tr>
-	<tr><td>DeepSeek V4.1 Flash (Peak)</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$15</strong></td></tr>
-	<tr><td>DeepSeek V4 Pro (Off-Peak)</td><td>$0.66</td><td>$1.98</td><td>$0.022</td><td>-</td><td><strong>$15</strong></td></tr>
-	<tr><td>DeepSeek V4 Pro (Peak)</td><td>$1.32</td><td>$3.96</td><td>$0.044</td><td>-</td><td><strong>$15</strong></td></tr>
-	<tr><td>GPT 5.6 Luna</td><td>$0.20</td><td>$1.20</td><td>$0.02</td><td>$0.25</td><td><strong>$15</strong></td></tr>
-	<tr><td>MiniMax M2.7</td><td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td><strong>$60</strong></td></tr>
-	<tr><td>GLM-5.3-Flash</td><td>$0.15</td><td>$0.50</td><td>$0.03</td><td>-</td><td><strong>$60</strong></td></tr>
-</table>`;
-
-const endpointsTableHtml = `
-<table>
-	<tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr>
-	<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td></tr>
-	<tr><td>DeepSeek V4.1 Flash</td><td>deepseek-flash</td><td>/</td><td>@ai-sdk/openai-compatible</td></tr>
-	<tr><td>DeepSeek V4 Pro</td><td>deepseek-v4-pro</td><td>/</td><td>@ai-sdk/openai-compatible</td></tr>
-	<tr><td>GPT 5.6 Luna</td><td>gpt-5.6-luna</td><td>/</td><td>@ai-sdk/openai</td></tr>
-	<tr><td>MiniMax M2.7</td><td>minimax-m2.7</td><td>/</td><td>@ai-sdk/anthropic</td></tr>
-	<tr><td>GLM-5.3-Flash</td><td>glm-5.3-flash</td><td>/</td><td>@ai-sdk/openai-compatible</td></tr>
-</table>`;
-
-const pricingPageHtml = `${requestsTableHtml}${pricingTableHtml}${endpointsTableHtml}`;
-/** The relocated docs render both plans; Go Plus appears first here to expose order-dependent selection. */
-const planPricingPageHtml = `${requestsTableHtml}
-<div data-plan-panel="go-plus">${pricingTableHtml.replaceAll("<strong>$15</strong>", "<strong>$60</strong>")}</div>
-<div data-plan-panel="go">${pricingTableHtml}</div>
-${endpointsTableHtml}`;
-
-describe("parseOpenCodeGoPricingTable", () => {
-	it("uses the relocated official source and standard Go allowances regardless of panel order", () => {
-		expect(OPENCODE_GO_PRICING_URL).toBe("https://opencode.ai/v2/docs/console/go/");
-		const row = parseOpenCodeGoPricingTable(planPricingPageHtml).get("grok-4.6")!;
-		// Go Plus gives this model $60; standard Go gives $15, so the adjusted cost must still quadruple.
-		expect(row.usage).toBe(15);
-		expect(getOpenCodeGoUsageAdjustedCost(row)).toEqual({ input: 8, output: 24, cacheRead: 2, cacheWrite: 0 });
-	});
-
-	it("rejects missing or empty Go panels and ambiguous unlabelled pricing instead of borrowing another plan", () => {
-		expect(() => parseOpenCodeGoPricingTable(`<div data-plan-panel="go-plus">${pricingPageHtml}</div>`)).toThrow(
-			"pricing panel not found",
-		);
-		// An empty standard panel must not scan forward into the next plan's valid table.
-		expect(() =>
-			parseOpenCodeGoPricingTable(
-				`<div data-plan-panel="go"></div><div data-plan-panel="go-plus">${pricingPageHtml}</div>`,
-			),
-		).toThrow("pricing table not found");
-		expect(() => parseOpenCodeGoPricingTable(`${pricingTableHtml}${pricingPageHtml}`)).toThrow(
-			"ambiguous pricing tables",
+describe("parseOpenCodeGoPricing", () => {
+	it("uses exact model IDs, standard Go allowances, and base rates despite context overrides", () => {
+		const pricing = parseOpenCodeGoPricing({ data: [grok] });
+		expect(pricing).toEqual(
+			new Map([["grok-4.7", { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0, usage: 15 }]]),
 		);
 	});
 
-	it("selects the pricing table by its header columns, keys rows by endpoint model id, and skips high-tier and peak rows", () => {
-		const pricing = parseOpenCodeGoPricingTable(pricingPageHtml);
-		// Every base model appears once under its endpoint model id: the > 200K
-		// and Peak variants are dropped, and names join to ids via the
-		// endpoints table ("DeepSeek V4.1 Flash" -> "deepseek-flash").
-		expect([...pricing.keys()].sort()).toEqual([
-			"deepseek-flash",
-			"deepseek-v4-pro",
-			"glm-5.3-flash",
-			"gpt-5.6-luna",
-			"grok-4.6",
-			"minimax-m2.7",
-		]);
-		// The ≤ 200K row is the one kept for Grok, and the dash cache-write cell becomes 0.
-		expect(pricing.get("grok-4.6")).toEqual({ input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0, usage: 15 });
-		expect(pricing.get("deepseek-flash")).toEqual({
-			input: 0.15,
-			output: 0.6,
-			cacheRead: 0.003,
-			cacheWrite: 0,
-			usage: 15,
-		});
-		expect(pricing.get("deepseek-v4-pro")).toEqual({
-			input: 0.66,
-			output: 1.98,
-			cacheRead: 0.022,
-			cacheWrite: 0,
-			usage: 15,
-		});
-		expect(pricing.get("minimax-m2.7")).toEqual({
-			input: 0.3,
-			output: 1.2,
-			cacheRead: 0.06,
-			cacheWrite: 0.375,
-			usage: 60,
-		});
+	it.each([
+		[3, 3],
+		[{ "12h": 0.5, "30m": 0.25 }, 0.25],
+		[{ "1h": 3, "5m": 1.875 }, 1.875],
+	])("accepts scalar and retention-specific cache write rates: %j", (write, cacheWrite) => {
+		const catalog = {
+			data: [{ ...grok, cost: { text: { input: { price: 2, cache: { write } }, output: { price: 6 } } } }],
+		};
+		expect(parseOpenCodeGoPricing(catalog).get(grok.id)).toMatchObject({ cacheRead: 0, cacheWrite });
 	});
 
-	it("indexes columns by canonical header name, so reordered, extra, or reworded columns cannot shift prices", () => {
-		// "Usage" is the legacy header wording; the live page says "Monthly
-		// limit" since Sep 2026, so both must resolve to the usage column.
-		const reordered = `
-<table>
-	<tr><th>Usage</th><th>Cached Write</th><th>Cached Read</th><th>Output</th><th>Input</th><th>Model</th></tr>
-	<tr><td>$60</td><td>$0.375</td><td>$0.06</td><td>$1.20</td><td>$0.30</td><td>MiniMax M2.7</td></tr>
-	<tr><td>$15</td><td>-</td><td>$0.02</td><td>$1.20</td><td>$0.20</td><td>GPT 5.6 Luna</td></tr>
-</table>${endpointsTableHtml}`;
-		const reorderedPricing = parseOpenCodeGoPricingTable(reordered);
-		expect(reorderedPricing.get("minimax-m2.7")).toEqual({
-			input: 0.3,
-			output: 1.2,
-			cacheRead: 0.06,
-			cacheWrite: 0.375,
-			usage: 60,
-		});
-		expect(reorderedPricing.get("gpt-5.6-luna")).toEqual({
-			input: 0.2,
-			output: 1.2,
-			cacheRead: 0.02,
-			cacheWrite: 0,
-			usage: 15,
-		});
-
-		const withExtraColumn = `
-<table>
-	<tr><th>Model</th><th>Notes</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Usage</th></tr>
-	<tr><td>MiniMax M2.7</td><td>preview</td><td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td>$60</td></tr>
-</table>${endpointsTableHtml}`;
-		expect(parseOpenCodeGoPricingTable(withExtraColumn).get("minimax-m2.7")).toEqual({
-			input: 0.3,
-			output: 1.2,
-			cacheRead: 0.06,
-			cacheWrite: 0.375,
-			usage: 60,
-		});
-	});
-
-	it("drops superseded struck-through values and trailing promo annotations, keeping the current number", () => {
-		// Live-page regression (Sep 2026): the Go promo strikes the old $15
-		// monthly limit and shows the multiplied $60 with a "4x · Ends Sep 20"
-		// annotation; price cells can carry the same old/new pattern.
-		const promoPageHtml = `
-<table>
-	<tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr>
-	<tr><td>DeepSeek V4.1 Flash (Off-Peak)</td><td><s>$0.30</s> <strong>$0.15</strong></td><td>$0.60</td><td>$0.003</td><td>-</td><td><del>$15</del> <strong>$60</strong><br><small>4x · Ends Sep 20</small></td></tr>
-	<tr><td>Union Alpha Free</td><td>Free</td><td>Free</td><td>Free</td><td>-</td><td><strong>Unlimited</strong><br><small>limited time</small></td></tr>
-</table>
-<table>
-	<tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr>
-	<tr><td>DeepSeek V4.1 Flash</td><td>deepseek-flash</td><td>/</td><td>@ai-sdk/openai-compatible</td></tr>
-	<tr><td>Union Alpha Free</td><td>union-alpha</td><td>/</td><td>@ai-sdk/anthropic</td></tr>
-</table>`;
-		const pricing = parseOpenCodeGoPricingTable(promoPageHtml);
-		// The current (unstruck) values win: usage 60 and input 0.15, with the
-		// promo annotation ignored rather than fused into the number.
-		expect(pricing.get("deepseek-flash")).toEqual({
-			input: 0.15,
-			output: 0.6,
-			cacheRead: 0.003,
-			cacheWrite: 0,
-			usage: 60,
-		});
-		// "Free" price cells are 0 cost and the "Unlimited ... limited time"
-		// usage cell is an infinite allowance, whose 60/usage multiplier is 0.
-		const unionAlphaFree = pricing.get("union-alpha");
-		expect(unionAlphaFree).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usage: Infinity });
-		expect(getOpenCodeGoUsageAdjustedCost(pricing.get("union-alpha")!)).toEqual({
+	it("interprets a null monthly usage record as an unlimited promotion", () => {
+		const free = {
+			id: "beam-free",
+			cost: { text: { input: { price: 0, cache: { read: 0 } }, output: { price: 0 } } },
+			go: { monthly_usage: null },
+		};
+		expect(parseOpenCodeGoPricing({ data: [free] }).get(free.id)).toEqual({
 			input: 0,
 			output: 0,
 			cacheRead: 0,
 			cacheWrite: 0,
+			usage: Infinity,
 		});
-
-		// A cell carrying only an annotation ("4x · Ends Sep 20") has no price in
-		// it; the leading-number rule must reject digit-fused junk loudly, for
-		// ASCII and Unicode suffixes alike.
-		const annotationOnly = promoPageHtml.replace(
-			"<td><s>$0.30</s> <strong>$0.15</strong></td>",
-			"<td>4x · Ends Sep 20</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(annotationOnly)).toThrow("unparseable input cell");
-		const unicodeFusion = promoPageHtml.replace(
-			"<td><s>$0.30</s> <strong>$0.15</strong></td>",
-			"<td>4× · Ends Sep 20</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(unicodeFusion)).toThrow("unparseable input cell");
-
-		// An unclosed struck-through tag would leave the superseded value in the
-		// cell, silently winning the leading-number pick — it must fail instead.
-		const unclosedStrike = promoPageHtml.replace(
-			"<td><del>$15</del> <strong>$60</strong><br><small>4x · Ends Sep 20</small></td>",
-			"<td><del>$15 <strong>$60</strong></td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(unclosedStrike)).toThrow("unpaired struck-through tag");
 	});
 
-	it("fails loudly when the pricing or endpoints table is missing or malformed", () => {
-		const noPricingTable = "<table><tr><th>Model</th><th>requests per 5 hour</th></tr></table>";
-		expect(() => parseOpenCodeGoPricingTable(noPricingTable)).toThrow("pricing table not found");
-
-		// Pricing without the endpoints table cannot map names to model ids.
-		expect(() => parseOpenCodeGoPricingTable(`${requestsTableHtml}${pricingTableHtml}`)).toThrow(
-			"endpoints table not found",
-		);
-
-		// A pricing model absent from the endpoints table has no id to key by.
-		const rowWithoutModelId = pricingPageHtml.replace(
-			"<tr><td>GLM-5.3-Flash</td>",
-			"<tr><td>Mystery Model</td><td>$1</td><td>$2</td><td>$0.1</td><td>-</td><td><strong>$60</strong></td></tr>\n\t<tr><td>GLM-5.3-Flash</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(rowWithoutModelId)).toThrow(
-			'OpenCode Go pricing row "Mystery Model" has no model id in the endpoints table',
-		);
-
-		// Two endpoints rows for the same display name would overwrite the
-		// name->id mapping silently.
-		const duplicateEndpointsRow = pricingPageHtml.replace(
-			"<tr><td>Grok 4.6</td><td>grok-4.6</td>",
-			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td></tr>\n\t<tr><td>Grok 4.6</td><td>grok-4.6</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(duplicateEndpointsRow)).toThrow("duplicate rows for");
-
-		// Two endpoints names claiming the same id would collide when pricing
-		// rows are keyed by id.
-		const endpointsIdCollision = pricingPageHtml.replace(
-			"<td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td>",
-			"<td>minimax-m2.7</td><td>/</td><td>@ai-sdk/xai</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(endpointsIdCollision)).toThrow("same model id");
-
-		// An endpoints row with fewer cells than its header would read the id
-		// out of a shifted column.
-		const shiftedEndpointsRow = pricingPageHtml.replace(
-			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td></tr>",
-			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td></tr>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(shiftedEndpointsRow)).toThrow("endpoints row has 3 cells, expected 4");
-
-		// An empty name or id cell cannot key a pricing row.
-		const emptyEndpointsId = pricingPageHtml.replace(
-			"<tr><td>Grok 4.6</td><td>grok-4.6</td><td>/</td><td>@ai-sdk/xai</td></tr>",
-			"<tr><td>Grok 4.6</td><td></td><td>/</td><td>@ai-sdk/xai</td></tr>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(emptyEndpointsId)).toThrow("empty model name or id");
-
-		// A header-only endpoints table yields no id mapping at all.
-		const emptyEndpointsTable = `${requestsTableHtml}${pricingTableHtml}
-<table>
-	<tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr>
-</table>`;
-		expect(() => parseOpenCodeGoPricingTable(emptyEndpointsTable)).toThrow("endpoints table parsed to zero rows");
-
-		// Two pricing variants collapsing to one base name hit the same model
-		// id; one row would silently win.
-		const duplicateRow = pricingPageHtml.replace(
-			"<tr><td>MiniMax M2.7</td>",
-			"<tr><td>MiniMax M2.7 (EU)</td><td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td><strong>$60</strong></td></tr>\n\t<tr><td>MiniMax M2.7</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(duplicateRow)).toThrow('duplicate rows for model id "minimax-m2.7"');
-
-		const badPrice = pricingPageHtml.replace(
-			"<td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td><strong>$60</strong></td>",
-			"<td>call for pricing</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td><strong>$60</strong></td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(badPrice)).toThrow("unparseable input cell");
-
-		const badUsage = pricingPageHtml.replace(
-			"<td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td><strong>$60</strong></td>",
-			"<td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td>-</td>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(badUsage)).toThrow("invalid usage allowance");
-
-		// Two headers resolving to the same canonical column (here "Input" and
-		// its alias) would make one win silently; the parser must fail instead.
-		const aliasedDuplicateColumn = `
-<table>
-	<tr><th>Model</th><th>Input</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr>
-	<tr><td>MiniMax M2.7</td><td>$0.30</td><td>$9</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td>$60</td></tr>
-</table>`;
-		expect(() => parseOpenCodeGoPricingTable(aliasedDuplicateColumn)).toThrow("duplicate columns for input");
-
-		// A body row with a different cell count than the header would read
-		// prices out of shifted columns; it must fail instead.
-		const shiftedRow = pricingPageHtml.replace(
-			"<tr><td>MiniMax M2.7</td><td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td><td><strong>$60</strong></td></tr>",
-			"<tr><td>MiniMax M2.7</td><td>$0.30</td><td>$1.20</td><td>$0.06</td><td>$0.375</td></tr>",
-		);
-		expect(() => parseOpenCodeGoPricingTable(shiftedRow)).toThrow("has 5 cells, expected 6");
+	it.each([
+		[{ data: [] }, "expected a non-empty model list"],
+		[{ data: [grok, grok] }, 'duplicate rows for model ID "grok-4.7"'],
+		[{ data: [{ ...grok, id: "" }] }, "invalid model ID"],
+		[{ data: [{ ...grok, go: { monthly_usage: { "go-plus": 60 } } }] }, "invalid standard Go allowance"],
+		[{ data: [{ ...grok, go: { monthly_usage: { go: 0 } } }] }, "invalid standard Go allowance"],
+		[
+			{ data: [{ ...grok, cost: { text: { ...grok.cost.text, output: { price: "6" } } } }] },
+			"invalid rate at grok-4.7.cost.text.output.price",
+		],
+	])("rejects malformed pricing: %s", (payload, message) => {
+		expect(() => parseOpenCodeGoPricing(payload)).toThrow(message);
 	});
 });
 
 describe("getOpenCodeGoUsageAdjustedCost", () => {
-	it("scales prices by the $60 usage baseline: $15 quadruples, $30 doubles, $60 keeps", () => {
-		expect(getOpenCodeGoUsageAdjustedCost({ input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0, usage: 15 })).toEqual(
-			{ input: 8, output: 24, cacheRead: 2, cacheWrite: 0 },
+	it.each([
+		[15, { input: 8, output: 24, cacheRead: 2, cacheWrite: 1 }],
+		[30, { input: 4, output: 12, cacheRead: 1, cacheWrite: 0.5 }],
+		[60, { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0.25 }],
+		[Infinity, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }],
+	])("scales base prices by 60 / %s", (usage, expected) => {
+		expect(getOpenCodeGoUsageAdjustedCost({ input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0.25, usage })).toEqual(
+			expected,
 		);
-		expect(
-			getOpenCodeGoUsageAdjustedCost({ input: 0.15, output: 0.47, cacheRead: 0.016, cacheWrite: 0.2, usage: 30 }),
-		).toEqual({ input: 0.3, output: 0.94, cacheRead: 0.032, cacheWrite: 0.4 });
-		expect(
-			getOpenCodeGoUsageAdjustedCost({ input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375, usage: 60 }),
-		).toEqual({ input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 });
 	});
 
 	it("rounds adjusted prices to the catalog's cost precision", () => {
-		expect(
-			getOpenCodeGoUsageAdjustedCost({ input: 0.834, output: 2.501, cacheRead: 0.042, cacheWrite: 0, usage: 30 }),
-		).toEqual({ input: 1.668, output: 5.002, cacheRead: 0.084, cacheWrite: 0 });
+		expect(getOpenCodeGoUsageAdjustedCost({ input: 1, output: 0, cacheRead: 0, cacheWrite: 0, usage: 7 }).input).toBe(
+			8.571429,
+		);
 	});
 });
 
-/** Copies the AI package into a disposable root so generator runs never mutate the worktree. */
-function createIsolatedPackage(): { fixtureRoot: string; isolatedPackageRoot: string } {
-	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-opencode-go-pricing-"));
-	temporaryRoots.push(fixtureRoot);
-
-	const isolatedPackageRoot = join(fixtureRoot, "package");
-	mkdirSync(isolatedPackageRoot);
-	for (const entry of ["package.json", "scripts", "src"]) {
-		cpSync(join(packageRoot, entry), join(isolatedPackageRoot, entry), { recursive: true });
-	}
-	return { fixtureRoot, isolatedPackageRoot };
-}
+/** Disposable output roots owned by generator subprocess tests. */
+const temporaryRoots: string[] = [];
 
 afterEach(() => {
 	for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
 });
 
+/** Run strict generation with a mocked Go response and isolated JSON output. */
+function generateWithGoCatalog(goCatalog: unknown, status = 200) {
+	const root = mkdtempSync(join(tmpdir(), "pi-opencode-go-pricing-"));
+	temporaryRoots.push(root);
+	const preloadPath = join(root, "mock-fetch.mjs");
+	const outputPath = join(root, "catalog");
+
+	// Zen shares the ID but has different prices. A Go model missing from the official list must also keep its rates.
+	const catalog = {
+		"alibaba-token-plan": {
+			models: Object.fromEntries(
+				qwenTokenPlanIndividualModelIds.map((id) => [id, { id, name: id, tool_call: true }]),
+			),
+		},
+		"opencode-go": {
+			models: {
+				[grok.id]: {
+					name: "Different display name",
+					tool_call: true,
+					cost: { input: 2, output: 6, cache_read: 0.5 },
+				},
+				"brand-new-model": { tool_call: true, cost: { input: 1, output: 2, cache_read: 3, cache_write: 4 } },
+			},
+		},
+		opencode: { models: { [grok.id]: { tool_call: true, cost: { input: 9, output: 9, cache_read: 9 } } } },
+	};
+
+	// Serve only the metadata sources required for catalog generation, with no live provider calls.
+	writeFileSync(
+		preloadPath,
+		`globalThis.fetch = async (input) => {
+			const url = String(input);
+			if (url === "https://models.dev/api.json") return Response.json(${JSON.stringify(catalog)});
+			if (url === "https://opencode.ai/inference/go/v1/models") return Response.json(${JSON.stringify(goCatalog)}, { status: ${status} });
+			if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { id: "jev-latest", name: "Jev", type: "decision" } });
+			if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test-image", name: "Test Image", architecture: { input_modalities: ["text"], output_modalities: ["image"] } }] });
+			if (url.startsWith("https://openrouter.ai/api/v1/models") || url === "https://ai-gateway.vercel.sh/v1/models") return Response.json({ data: [] });
+			if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });
+			throw new Error(\`Unexpected fetch: \${url}\`);
+		};`,
+	);
+
+	// JSON-only output keeps the package's checked-in and generated model artifacts untouched.
+	const result = spawnSync(
+		process.execPath,
+		[
+			"--import",
+			pathToFileURL(preloadPath).href,
+			"scripts/generate-models.ts",
+			"--strict",
+			"--json-only",
+			"--json-output",
+			outputPath,
+		],
+		{ cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 10_000 },
+	);
+	return { outputPath, status: result.status, log: `${result.stdout}\n${result.stderr}` };
+}
+
+/** Read a provider's generated chat catalog keyed by endpoint ID. */
+function readGeneratedModels(outputPath: string, provider: string): Record<string, Model<Api>> {
+	return JSON.parse(readFileSync(join(outputPath, "providers", `${provider}.json`), "utf8"));
+}
+
 describe("strict model generation with the OpenCode Go pricing override", () => {
-	it("replaces opencode-go costs with usage-adjusted page prices while opencode (Zen) keeps models.dev costs", () => {
-		const { fixtureRoot, isolatedPackageRoot } = createIsolatedPackage();
-		const preloadPath = join(fixtureRoot, "mock-fetch.mjs");
+	it("scales matched Go models and preserves the nominal rates for Zen and unmatched Go models", () => {
+		const { outputPath, status, log } = generateWithGoCatalog({ data: [grok] });
+		expect(status, log).toBe(0);
+		expect(log).toContain("OpenCode Go pricing catalog has no row for brand-new-model");
 
-		// Zen carries a grok-4.6 with distinct nominal prices: it must stay untouched,
-		// proving the override is scoped to opencode-go only.
-		const model = (cost: Record<string, number>) => ({
-			name: "model",
-			tool_call: true,
-			reasoning: false,
-			limit: { context: 8192, output: 1024 },
-			cost,
-		});
-		const catalog = {
-			"alibaba-token-plan": {
-				models: Object.fromEntries(
-					qwenTokenPlanIndividualModelIds.map((id) => [id, { id, name: id, tool_call: true }]),
-				),
-			},
-			"opencode-go": {
-				models: {
-					"grok-4.6": model({ input: 2, output: 6, cache_read: 0.5, cache_write: 0 }),
-					"minimax-m2.7": model({ input: 0.3, output: 1.2, cache_read: 0.06, cache_write: 0 }),
-					"glm-5.3-flash": model({ input: 0.075, output: 0.25, cache_read: 0.015, cache_write: 0 }),
-					// Regression: models.dev reuses the short id "deepseek-flash" for
-					// V4.1 Flash, which the page calls "DeepSeek V4.1 Flash" — only the
-					// endpoints-table id mapping can join them.
-					"deepseek-flash": model({ input: 0.15, output: 0.6, cache_read: 0.003, cache_write: 0 }),
-					// A model the pricing page does not list yet keeps its models.dev cost.
-					"brand-new-model": model({ input: 1, output: 2, cache_read: 3, cache_write: 4 }),
-				},
-			},
-			opencode: {
-				models: {
-					"grok-4.6": model({ input: 9, output: 9, cache_read: 9, cache_write: 0 }),
-				},
-			},
-		};
-		writeFileSync(
-			preloadPath,
-			`const catalog = ${JSON.stringify(catalog)};\n` +
-				`const pricingPage = ${JSON.stringify(planPricingPageHtml)};\n` +
-				`globalThis.fetch = async (input) => {\n` +
-				`  const url = String(input);\n` +
-				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
-				`  if (url === ${JSON.stringify(OPENCODE_GO_PRICING_URL)}) return new Response(pricingPage, { status: 200 });\n` +
-				// Unified generation requires a canonical classifier and at least one usable image model.
-				`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { id: "jev-latest", name: "Jev", type: "decision" } });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test-image", name: "Test Image", architecture: { input_modalities: ["text"], output_modalities: ["image"] } }] });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models" || url === "https://openrouter.ai/api/v1/models?output_modalities=decisions") return Response.json({ data: [] });\n` +
-				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
-				// Strict generation requires the Radius catalog to return at least one model.
-				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
-				`  throw new Error(\`Unexpected fetch: \${url}\`);\n` +
-				`};\n`,
-		);
-
-		const result = spawnSync(
-			process.execPath,
-			["--import", pathToFileURL(preloadPath).href, "scripts/generate-models.ts", "--strict"],
-			{ cwd: isolatedPackageRoot, encoding: "utf8", timeout: 10_000 },
-		);
-		expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-		expect(`${result.stdout}\n${result.stderr}`).toContain("OpenCode Go pricing page has no row for brand-new-model");
-		expect(`${result.stdout}\n${result.stderr}`).not.toContain("no row for deepseek-flash");
-
-		const goModels = readGeneratedModels(isolatedPackageRoot, "opencode-go.json");
-		// Page prices scaled by 60/usage: grok-4.6 and deepseek-flash x4 ($15
-		// usage — proving the id-join), minimax-m2.7 and glm-5.3-flash x1 ($60,
-		// cache write picked up from the page for minimax).
-		expect(goModels["grok-4.6"].cost).toEqual({ input: 8, output: 24, cacheRead: 2, cacheWrite: 0 });
-		expect(goModels["deepseek-flash"].cost).toEqual({ input: 0.6, output: 2.4, cacheRead: 0.012, cacheWrite: 0 });
-		expect(goModels["minimax-m2.7"].cost).toEqual({ input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 });
-		expect(goModels["glm-5.3-flash"].cost).toEqual({ input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 });
+		const goModels = readGeneratedModels(outputPath, "opencode-go");
+		expect(goModels[grok.id].cost).toEqual({ input: 8, output: 24, cacheRead: 2, cacheWrite: 0 });
 		expect(goModels["brand-new-model"].cost).toEqual({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
-
-		const zenModels = readGeneratedModels(isolatedPackageRoot, "opencode.json");
-		expect(zenModels["grok-4.6"].cost).toEqual({ input: 9, output: 9, cacheRead: 9, cacheWrite: 0 });
+		expect(readGeneratedModels(outputPath, "opencode")[grok.id].cost).toEqual({
+			input: 9,
+			output: 9,
+			cacheRead: 9,
+			cacheWrite: 0,
+		});
 	});
 
-	it("fails the strict generator when the pricing page cannot be fetched", () => {
-		const { fixtureRoot, isolatedPackageRoot } = createIsolatedPackage();
-		const preloadPath = join(fixtureRoot, "mock-fetch.mjs");
-		const catalog = {
-			"alibaba-token-plan": {
-				models: Object.fromEntries(
-					qwenTokenPlanIndividualModelIds.map((id) => [id, { id, name: id, tool_call: true }]),
-				),
-			},
-			"opencode-go": {
-				models: {
-					"grok-4.6": {
-						name: "Grok 4.6",
-						tool_call: true,
-						reasoning: false,
-						limit: { context: 8192, output: 1024 },
-					},
-				},
-			},
-		};
-		writeFileSync(
-			preloadPath,
-			`const catalog = ${JSON.stringify(catalog)};\n` +
-				`globalThis.fetch = async (input) => {\n` +
-				`  const url = String(input);\n` +
-				`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
-				`  if (url === "https://models.dev/models.json?type=decision") return Response.json({ "typesafe/jev-latest": { id: "jev-latest", name: "Jev", type: "decision" } });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models?output_modalities=image") return Response.json({ data: [{ id: "test-image", name: "Test Image", architecture: { input_modalities: ["text"], output_modalities: ["image"] } }] });\n` +
-				`  if (url === "https://openrouter.ai/api/v1/models" || url === "https://openrouter.ai/api/v1/models?output_modalities=decisions") return Response.json({ data: [] });\n` +
-				`  if (url === "https://ai-gateway.vercel.sh/v1/models") return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
-				`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
-				`  if (url === ${JSON.stringify(OPENCODE_GO_PRICING_URL)}) throw new Error("docs page unreachable");\n` +
-				`  throw new Error(\`Unexpected fetch: \${url}\`);\n` +
-				`};\n`,
-		);
-
-		const result = spawnSync(
-			process.execPath,
-			["--import", pathToFileURL(preloadPath).href, "scripts/generate-models.ts", "--strict"],
-			{ cwd: isolatedPackageRoot, encoding: "utf8", timeout: 10_000 },
-		);
-		// A failed pricing fetch is a build failure in strict mode, not a silent fallback.
-		expect(result.status).toBe(1);
-		expect(`${result.stdout}\n${result.stderr}`).toContain("docs page unreachable");
+	it.each([
+		[503, "OpenCode Go model list returned 503"],
+		[200, "OpenCode Go pricing expected a non-empty model list"],
+	])("does not emit a catalog when the Go source fails validation (HTTP %s)", (httpStatus, message) => {
+		const { outputPath, status, log } = generateWithGoCatalog({ data: [] }, httpStatus);
+		expect(status, log).toBe(1);
+		expect(log).toContain(message);
+		expect(existsSync(outputPath)).toBe(false);
 	});
 });
-
-/** Read chat models by model id from the unified provider catalog's API groups. */
-function readGeneratedModels(isolatedPackageRoot: string, filename: string): Record<string, Model<Api>> {
-	const generated = JSON.parse(
-		readFileSync(join(isolatedPackageRoot, "src/providers/data", filename), "utf8"),
-	) as Record<string, Record<string, AnyModel>>;
-	// Internal keys now include the operation type; price assertions still address chat model ids.
-	return Object.fromEntries(
-		Object.values(generated)
-			.flatMap((group) => Object.values(group))
-			.filter((model) => isModelType(model, "chat"))
-			.map((model) => [model.id, model]),
-	);
-}
